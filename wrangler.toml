@@ -1,0 +1,12 @@
+name = "schedule-task-cfworker"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# Cron Triggers - 每月6日10点的0、10、30分执行
+[triggers]
+crons = [
+  "0 10 6 * *",   # 每月6日10点0分
+  "10 10 6 * *",  # 每月6日10点10分
+  "30 10 6 * *"   # 每月6日10点30分
+]
+
