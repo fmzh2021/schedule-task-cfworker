@@ -4,7 +4,7 @@
  */
 
 import { getAllTasks, getTask, saveTask, deleteTask } from './config.js';
-import { getMatchingTasks } from './cron-parser.js';
+import { getMatchingTasks, matchesCron } from './cron-parser.js';
 
 export default {
   /**
@@ -162,6 +162,37 @@ export default {
         return jsonResponse({ success: true, message: '任务已触发' }, corsHeaders);
       }
 
+      if (path === '/api/test-cron' && request.method === 'POST') {
+        // 测试 cron 表达式
+        const { cron, date } = await request.json();
+        if (!cron) {
+          return jsonResponse(
+            { success: false, error: '缺少 cron 参数' },
+            corsHeaders,
+            400
+          );
+        }
+
+        const testDate = date ? new Date(date) : new Date();
+        const matches = matchesCron(cron, testDate);
+
+        return jsonResponse({
+          success: true,
+          data: {
+            cron,
+            testDate: testDate.toISOString(),
+            matches,
+            currentTime: {
+              minute: testDate.getUTCMinutes(),
+              hour: testDate.getUTCHours(),
+              day: testDate.getUTCDate(),
+              month: testDate.getUTCMonth() + 1,
+              weekday: testDate.getUTCDay(),
+            },
+          },
+        }, corsHeaders);
+      }
+
       // 默认返回 API 文档
       return jsonResponse({
         success: true,
@@ -206,6 +237,13 @@ async function handleScheduledTask(event, env) {
 
     // 使用 cron 解析器获取匹配当前时间的任务
     const matchingTasks = getMatchingTasks(allTasks, now);
+    
+    // 记录所有任务的检查结果（用于调试）
+    console.log(`[${now.toISOString()}] 检查 ${allTasks.length} 个任务`);
+    allTasks.forEach(task => {
+      const matches = matchesCron(task.cron, now);
+      console.log(`[${now.toISOString()}] 任务 ${task.name} (${task.cron}): ${matches ? '匹配' : '不匹配'}`);
+    });
     
     if (matchingTasks.length === 0) {
       console.log(`[${now.toISOString()}] 当前时间没有匹配的任务`);
