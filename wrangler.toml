@@ -2,11 +2,17 @@ name = "schedule-task-cfworker"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# Cron Triggers - 每月5日10点的0、10、30分执行
+# KV 命名空间 - 用于存储任务配置
+[[kv_namespaces]]
+binding = "TASKS_KV"
+id = "99b84a8990a145ccafaf3550b24dfbee"  # 部署时需要创建 KV 命名空间并填入 ID
+preview_id = "99b84a8990a145ccafaf3550b24dfbee"  # 本地开发时使用
+
+# Cron Triggers - 使用通用触发器，在代码中解析 cron 表达式
+# 注意：由于 Cloudflare Workers 限制最多 5 个 cron 触发器
+# 我们使用每分钟执行一次的触发器，然后在代码中判断哪些任务应该执行
 [triggers]
 crons = [
-  "0 10 5 * *",   # 每月5日10点0分
-  "10 10 5 * *",  # 每月5日10点10分
-  "30 10 5 * *"   # 每月5日10点30分
+  "* * * * *"  # 每分钟执行一次，代码中会解析任务的 cron 表达式并判断是否执行
 ]
 

@@ -1,0 +1,98 @@
+{
+  "examples": [
+    {
+      "name": "GET 请求示例 - 通知任务",
+      "description": "每月6日10点0分执行，发送通知",
+      "config": {
+        "name": "每月复盘通知",
+        "url": "https://notice.xmwefun.cn",
+        "method": "GET",
+        "cron": "0 10 6 * *",
+        "params": {
+          "type": "xchat",
+          "bot": "weiliao-personal",
+          "title": "每月复盘",
+          "msg": "### 每月复盘内容"
+        },
+        "enabled": true
+      }
+    },
+    {
+      "name": "POST 请求示例 - 数据上报",
+      "description": "每天0点执行，上报数据",
+      "config": {
+        "name": "每日数据上报",
+        "url": "https://api.example.com/data",
+        "method": "POST",
+        "cron": "0 0 * * *",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer your-token"
+        },
+        "body": {
+          "date": "{{DATE}}",
+          "type": "daily",
+          "data": {}
+        },
+        "enabled": true
+      }
+    },
+    {
+      "name": "POST 请求示例 - 表单提交",
+      "description": "每周一9点执行，提交表单数据",
+      "config": {
+        "name": "周报提交",
+        "url": "https://api.example.com/submit",
+        "method": "POST",
+        "cron": "0 9 * * 1",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        "body": "key1=value1&key2=value2",
+        "enabled": true
+      }
+    },
+    {
+      "name": "多时间点执行",
+      "description": "每月6日10点的0、10、30分执行（需要创建3个任务）",
+      "configs": [
+        {
+          "name": "每月复盘通知 - 10:00",
+          "url": "https://notice.xmwefun.cn",
+          "method": "GET",
+          "cron": "0 10 6 * *",
+          "params": {
+            "type": "xchat",
+            "title": "每月复盘"
+          }
+        },
+        {
+          "name": "每月复盘通知 - 10:10",
+          "url": "https://notice.xmwefun.cn",
+          "method": "GET",
+          "cron": "10 10 6 * *",
+          "params": {
+            "type": "xchat",
+            "title": "每月复盘"
+          }
+        },
+        {
+          "name": "每月复盘通知 - 10:30",
+          "url": "https://notice.xmwefun.cn",
+          "method": "GET",
+          "cron": "30 10 6 * *",
+          "params": {
+            "type": "xchat",
+            "title": "每月复盘"
+          }
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "create_task": "curl -X POST https://your-worker.workers.dev/api/tasks -H 'Content-Type: application/json' -d @task-config.json",
+    "list_tasks": "curl https://your-worker.workers.dev/api/tasks",
+    "trigger_task": "curl -X POST https://your-worker.workers.dev/api/tasks/{task_id}/trigger"
+  }
+}
+
