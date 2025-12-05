@@ -57,10 +57,26 @@ function parseCronField(field, current, min, max) {
   return false;
 }
 
+// Get time parts in UTC+8 (China Standard Time)
+function getCSTTimeParts(date) {
+  // Convert to UTC+8 timezone
+  const cstOffset = 8 * 60; // UTC+8 in minutes
+  const utcTime = date.getTime() + (date.getTimezoneOffset() * 60000);
+  const cstTime = new Date(utcTime + (cstOffset * 60000));
+  
+  return {
+    minute: cstTime.getUTCMinutes(),
+    hour: cstTime.getUTCHours(),
+    day: cstTime.getUTCDate(),
+    month: cstTime.getUTCMonth() + 1, // getUTCMonth() returns 0-11
+    weekday: cstTime.getUTCDay(), // 0 (Sunday) to 6 (Saturday)
+  };
+}
+
 // Check if current time matches cron expression
 // cron: Cron expression, format: minute hour day month weekday
 // date: Date to check, defaults to current time
-// returns: whether it matches
+// returns: whether it matches (using UTC+8 timezone)
 export function matchesCron(cron, date = new Date()) {
   try {
     const parts = cron.trim().split(/\s+/);
@@ -71,12 +87,13 @@ export function matchesCron(cron, date = new Date()) {
 
     const [minute, hour, day, month, weekday] = parts;
     
-    // Get current time parts (UTC)
-    const currentMinute = date.getUTCMinutes();
-    const currentHour = date.getUTCHours();
-    const currentDay = date.getUTCDate();
-    const currentMonth = date.getUTCMonth() + 1; // getUTCMonth() returns 0-11
-    const currentWeekday = date.getUTCDay(); // 0 (Sunday) to 6 (Saturday)
+    // Get current time parts in UTC+8 (China Standard Time)
+    const timeParts = getCSTTimeParts(date);
+    const currentMinute = timeParts.minute;
+    const currentHour = timeParts.hour;
+    const currentDay = timeParts.day;
+    const currentMonth = timeParts.month;
+    const currentWeekday = timeParts.weekday;
 
     // Check each field
     const minuteMatch = parseCronField(minute, currentMinute, 0, 59);

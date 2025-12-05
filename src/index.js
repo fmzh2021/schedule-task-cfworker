@@ -176,19 +176,26 @@ export default {
         const testDate = date ? new Date(date) : new Date();
         const matches = matchesCron(cron, testDate);
 
+        // Get CST time parts for display
+        const cstOffset = 8 * 60;
+        const utcTime = testDate.getTime() + (testDate.getTimezoneOffset() * 60000);
+        const cstTime = new Date(utcTime + (cstOffset * 60000));
+        
         return jsonResponse({
           success: true,
           data: {
             cron,
             testDate: testDate.toISOString(),
+            testDateCST: cstTime.toISOString().replace('Z', '+08:00'),
             matches,
             currentTime: {
-              minute: testDate.getUTCMinutes(),
-              hour: testDate.getUTCHours(),
-              day: testDate.getUTCDate(),
-              month: testDate.getUTCMonth() + 1,
-              weekday: testDate.getUTCDay(),
+              minute: cstTime.getUTCMinutes(),
+              hour: cstTime.getUTCHours(),
+              day: cstTime.getUTCDate(),
+              month: cstTime.getUTCMonth() + 1,
+              weekday: cstTime.getUTCDay(),
             },
+            timezone: 'UTC+8 (CST)',
           },
         }, corsHeaders);
       }
@@ -225,32 +232,38 @@ export default {
 async function handleScheduledTask(event, env) {
   try {
     const now = new Date();
-    console.log(`[${now.toISOString()}] 定时任务触发器执行，检查匹配的任务...`);
+    // Get CST time for logging
+    const cstOffset = 8 * 60;
+    const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const cstTime = new Date(utcTime + (cstOffset * 60000));
+    const cstTimeStr = cstTime.toISOString().replace('Z', '+08:00');
+    
+    console.log(`[UTC: ${now.toISOString()}, CST: ${cstTimeStr}] 定时任务触发器执行，检查匹配的任务...`);
 
     // 获取所有任务
     const allTasks = await getAllTasks(env.TASKS_KV);
     
     if (allTasks.length === 0) {
-      console.log(`[${now.toISOString()}] 没有配置任何任务`);
+      console.log(`[CST: ${cstTimeStr}] 没有配置任何任务`);
       return;
     }
 
-    // 使用 cron 解析器获取匹配当前时间的任务
+    // 使用 cron 解析器获取匹配当前时间的任务（基于东八区时间）
     const matchingTasks = getMatchingTasks(allTasks, now);
     
     // 记录所有任务的检查结果（用于调试）
-    console.log(`[${now.toISOString()}] 检查 ${allTasks.length} 个任务`);
+    console.log(`[CST: ${cstTimeStr}] 检查 ${allTasks.length} 个任务`);
     allTasks.forEach(task => {
       const matches = matchesCron(task.cron, now);
-      console.log(`[${now.toISOString()}] 任务 ${task.name} (${task.cron}): ${matches ? '匹配' : '不匹配'}`);
+      console.log(`[CST: ${cstTimeStr}] 任务 ${task.name} (${task.cron}): ${matches ? '匹配' : '不匹配'}`);
     });
     
     if (matchingTasks.length === 0) {
-      console.log(`[${now.toISOString()}] 当前时间没有匹配的任务`);
+      console.log(`[CST: ${cstTimeStr}] 当前时间（东八区）没有匹配的任务`);
       return;
     }
 
-    console.log(`[${now.toISOString()}] 找到 ${matchingTasks.length} 个匹配的任务`);
+    console.log(`[CST: ${cstTimeStr}] 找到 ${matchingTasks.length} 个匹配的任务`);
 
     // 执行所有匹配的任务
     const promises = matchingTasks.map(task => executeTask(task));
