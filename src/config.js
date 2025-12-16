@@ -3,13 +3,41 @@
  * 使用 KV 存储来保存和管理任务配置
  */
 
+// 缓存配置
+const CACHE_TTL = 10 * 60 * 1000; // 10分钟（毫秒）
+
+// 模块级缓存变量
+let cachedTasks = null;
+let cacheTimestamp = 0;
+
 /**
- * 获取所有任务配置
+ * 清除任务缓存（在保存或删除任务后调用）
+ */
+export function clearTaskCache() {
+  cachedTasks = null;
+  cacheTimestamp = 0;
+  console.log('[缓存] 任务缓存已清除');
+}
+
+/**
+ * 获取所有任务配置（带缓存，每10分钟从KV获取一次）
  * @param {KVNamespace} kv - KV 命名空间
+ * @param {boolean} forceRefresh - 是否强制刷新缓存
  * @returns {Promise<Array>} 任务配置列表
  */
-export async function getAllTasks(kv) {
+export async function getAllTasks(kv, forceRefresh = false) {
   try {
+    const now = Date.now();
+    
+    // 检查缓存是否有效（10分钟内且未强制刷新）
+    if (!forceRefresh && cachedTasks !== null && (now - cacheTimestamp) < CACHE_TTL) {
+      const cacheAge = Math.floor((now - cacheTimestamp) / 1000);
+      console.log(`[缓存] 使用缓存的任务列表（缓存年龄: ${cacheAge}秒）`);
+      return cachedTasks;
+    }
+    
+    // 从 KV 获取最新数据
+    console.log('[缓存] 从 KV 获取任务列表...');
     const keys = await kv.list();
     const tasks = [];
     
@@ -25,9 +53,19 @@ export async function getAllTasks(kv) {
       }
     }
     
+    // 更新缓存
+    cachedTasks = tasks;
+    cacheTimestamp = now;
+    console.log(`[缓存] 任务列表已缓存（共 ${tasks.length} 个任务）`);
+    
     return tasks;
   } catch (error) {
     console.error('获取任务列表失败:', error);
+    // 如果出错但缓存存在，返回缓存数据
+    if (cachedTasks !== null) {
+      console.log('[缓存] 获取失败，使用缓存的任务列表');
+      return cachedTasks;
+    }
     return [];
   }
 }
@@ -58,6 +96,8 @@ export async function getTask(kv, taskId) {
 export async function saveTask(kv, taskId, taskConfig) {
   try {
     await kv.put(`task:${taskId}`, JSON.stringify(taskConfig));
+    // 清除缓存，确保下次获取时获取最新数据
+    clearTaskCache();
     return true;
   } catch (error) {
     console.error(`保存任务 ${taskId} 失败:`, error);
@@ -74,6 +114,8 @@ export async function saveTask(kv, taskId, taskConfig) {
 export async function deleteTask(kv, taskId) {
   try {
     await kv.delete(`task:${taskId}`);
+    // 清除缓存，确保下次获取时获取最新数据
+    clearTaskCache();
     return true;
   } catch (error) {
     console.error(`删除任务 ${taskId} 失败:`, error);
