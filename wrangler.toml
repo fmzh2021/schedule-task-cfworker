@@ -24,4 +24,5 @@ crons = [
 #
 # 本地开发时可以在 .dev.vars 文件中设置（不会被提交到 Git）：
 # API_KEY=your-secret-api-key-here
+API_KEY=foxhello2025
 
