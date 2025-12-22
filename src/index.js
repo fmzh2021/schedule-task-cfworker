@@ -6,6 +6,78 @@
 import { getAllTasks, getTask, saveTask, deleteTask } from './config.js';
 import { getMatchingTasks, matchesCron } from './cron-parser.js';
 
+/**
+ * 验证 API Key
+ * @param {Request} request - HTTP 请求对象
+ * @param {Env} env - 环境变量
+ * @returns {boolean} 是否验证通过
+ */
+function verifyApiKey(request, env) {
+  // 从环境变量获取 API Key
+  const validApiKey = env.API_KEY;
+  
+  // 如果没有配置 API Key，则允许所有请求（开发模式）
+  if (!validApiKey) {
+    console.warn('[安全警告] 未配置 API_KEY，所有请求将被允许');
+    return true;
+  }
+
+  // 方式1: 从 Authorization Header 获取 (Bearer Token)
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    if (token === validApiKey) {
+      return true;
+    }
+  }
+
+  // 方式2: 从 X-API-Key Header 获取
+  const apiKeyHeader = request.headers.get('X-API-Key');
+  if (apiKeyHeader && apiKeyHeader === validApiKey) {
+    return true;
+  }
+
+  // 方式3: 从查询参数获取（不推荐，但提供兼容性）
+  const url = new URL(request.url);
+  const apiKeyParam = url.searchParams.get('api_key');
+  if (apiKeyParam && apiKeyParam === validApiKey) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 检查路径是否需要鉴权
+ * @param {string} path - 请求路径
+ * @param {string} method - HTTP 方法
+ * @returns {boolean} 是否需要鉴权
+ */
+function requiresAuth(path, method) {
+  // 公开接口（不需要鉴权）
+  const publicPaths = [
+    '/',  // API 文档
+    '/api/test-cron',  // 测试工具
+  ];
+
+  // OPTIONS 请求不需要鉴权（CORS 预检）
+  if (method === 'OPTIONS') {
+    return false;
+  }
+
+  // 检查是否为公开路径
+  if (publicPaths.includes(path)) {
+    return false;
+  }
+
+  // 所有 /api/ 路径都需要鉴权（除了公开路径）
+  if (path.startsWith('/api/')) {
+    return true;
+  }
+
+  return false;
+}
+
 export default {
   /**
    * 处理定时任务触发
@@ -28,11 +100,28 @@ export default {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
+    }
+
+    // 接口鉴权检查
+    if (requiresAuth(path, request.method)) {
+      if (!verifyApiKey(request, env)) {
+        console.warn(`[鉴权失败] ${request.method} ${path} - IP: ${request.headers.get('CF-Connecting-IP') || 'unknown'}`);
+        return jsonResponse(
+          {
+            success: false,
+            error: '未授权访问',
+            message: '请提供有效的 API Key。可以通过以下方式提供：1) Authorization: Bearer <API_KEY> 2) X-API-Key: <API_KEY> 3) ?api_key=<API_KEY>',
+          },
+          corsHeaders,
+          401
+        );
+      }
+      console.log(`[鉴权成功] ${request.method} ${path}`);
     }
 
     try {
@@ -204,13 +293,23 @@ export default {
       return jsonResponse({
         success: true,
         message: '定时任务调度平台 API',
+        authentication: {
+          required: true,
+          methods: [
+            'Authorization: Bearer <API_KEY>',
+            'X-API-Key: <API_KEY>',
+            '?api_key=<API_KEY> (查询参数，不推荐)',
+          ],
+          note: '所有 /api/ 路径都需要鉴权（除了 /api/test-cron）',
+        },
         endpoints: {
-          'GET /api/tasks': '获取所有任务',
-          'POST /api/tasks': '创建新任务',
-          'GET /api/tasks/:id': '获取单个任务',
-          'PUT /api/tasks/:id': '更新任务',
-          'DELETE /api/tasks/:id': '删除任务',
-          'POST /api/tasks/:id/trigger': '手动触发任务',
+          'GET /api/tasks': '获取所有任务（需要鉴权）',
+          'POST /api/tasks': '创建新任务（需要鉴权）',
+          'GET /api/tasks/:id': '获取单个任务（需要鉴权）',
+          'PUT /api/tasks/:id': '更新任务（需要鉴权）',
+          'DELETE /api/tasks/:id': '删除任务（需要鉴权）',
+          'POST /api/tasks/:id/trigger': '手动触发任务（需要鉴权）',
+          'POST /api/test-cron': '测试 cron 表达式（公开）',
         },
       }, corsHeaders);
     } catch (error) {

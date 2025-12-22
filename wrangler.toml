@@ -16,3 +16,12 @@ crons = [
   "* * * * *"  # 每分钟执行一次，代码中会解析任务的 cron 表达式并判断是否执行
 ]
 
+# 环境变量配置
+# 部署时需要在 Cloudflare Dashboard 中设置以下环境变量：
+# - API_KEY: API 密钥，用于接口鉴权（强烈建议设置）
+#   设置方法：Workers & Pages > 你的 Worker > Settings > Variables > Environment Variables
+#   如果没有设置 API_KEY，所有请求将被允许（仅用于开发环境）
+#
+# 本地开发时可以在 .dev.vars 文件中设置（不会被提交到 Git）：
+# API_KEY=your-secret-api-key-here
+
