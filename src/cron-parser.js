@@ -130,3 +130,66 @@ export function getMatchingTasks(tasks, date = new Date()) {
     return matchesCron(task.cron, date);
   });
 }
+
+/**
+ * 计算 cron 表达式的下一个触发时间
+ * @param {string} cron - Cron 表达式
+ * @param {Date} startDate - 起始时间，默认为当前时间
+ * @returns {Date|null} 下一个触发时间，如果找不到则返回 null
+ */
+export function getNextCronTime(cron, startDate = new Date()) {
+  try {
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length !== 5) {
+      return null;
+    }
+
+    // 从起始时间的下一分钟开始检查
+    let checkDate = new Date(startDate);
+    checkDate.setUTCSeconds(0, 0);
+    checkDate.setUTCMinutes(checkDate.getUTCMinutes() + 1);
+
+    // 最多检查一年（避免无限循环）
+    const maxIterations = 365 * 24 * 60;
+    let iterations = 0;
+
+    while (iterations < maxIterations) {
+      if (matchesCron(cron, checkDate)) {
+        return checkDate;
+      }
+
+      // 增加1分钟
+      checkDate = new Date(checkDate.getTime() + 60 * 1000);
+      iterations++;
+    }
+
+    return null; // 在一年内未找到匹配时间
+  } catch (error) {
+    console.error(`计算下一个触发时间失败: ${cron}`, error);
+    return null;
+  }
+}
+
+/**
+ * 获取 cron 表达式的最近 N 个触发时间
+ * @param {string} cron - Cron 表达式
+ * @param {number} count - 需要获取的触发时间数量，默认5个
+ * @param {Date} startDate - 起始时间，默认为当前时间
+ * @returns {Array<Date>} 触发时间数组
+ */
+export function getNextCronTimes(cron, count = 5, startDate = new Date()) {
+  const times = [];
+  let currentDate = new Date(startDate);
+
+  for (let i = 0; i < count; i++) {
+    const nextTime = getNextCronTime(cron, currentDate);
+    if (!nextTime) {
+      break; // 无法找到更多触发时间
+    }
+    times.push(nextTime);
+    // 从找到的时间开始查找下一个
+    currentDate = new Date(nextTime);
+  }
+
+  return times;
+}

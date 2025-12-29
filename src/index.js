@@ -4,7 +4,7 @@
  */
 
 import { getAllTasks, getTask, saveTask, deleteTask } from './config.js';
-import { getMatchingTasks, matchesCron } from './cron-parser.js';
+import { getMatchingTasks, matchesCron, getNextCronTimes } from './cron-parser.js';
 
 /**
  * 验证 API Key
@@ -252,8 +252,8 @@ export default {
       }
 
       if (path === '/api/test-cron' && request.method === 'POST') {
-        // 测试 cron 表达式
-        const { cron, date } = await request.json();
+        // 测试 cron 表达式，展示最近5个触发时间
+        const { cron, startDate } = await request.json();
         if (!cron) {
           return jsonResponse(
             { success: false, error: '缺少 cron 参数' },
@@ -262,29 +262,52 @@ export default {
           );
         }
 
-        const testDate = date ? new Date(date) : new Date();
-        const matches = matchesCron(cron, testDate);
-
-        // Get CST time parts for display
-        const cstOffset = 8 * 60;
-        const utcTime = testDate.getTime() + (testDate.getTimezoneOffset() * 60000);
-        const cstTime = new Date(utcTime + (cstOffset * 60000));
+        // 解析起始时间，默认为当前时间
+        const baseDate = startDate ? new Date(startDate) : new Date();
         
-        return jsonResponse({
-          success: true,
-          data: {
-            cron,
-            testDate: testDate.toISOString(),
-            testDateCST: cstTime.toISOString().replace('Z', '+08:00'),
-            matches,
-            currentTime: {
+        // 获取最近5个触发时间
+        const nextTimes = getNextCronTimes(cron, 5, baseDate);
+
+        // 格式化时间为 CST (UTC+8)
+        const cstOffset = 8 * 60;
+        const formatCSTTime = (date) => {
+          const utcTime = date.getTime() + (date.getTimezoneOffset() * 60000);
+          const cstTime = new Date(utcTime + (cstOffset * 60000));
+          return {
+            iso: date.toISOString(),
+            cst: cstTime.toISOString().replace('Z', '+08:00'),
+            cstFormatted: cstTime.toISOString().replace('T', ' ').replace(/\.\d{3}Z/, '') + ' (CST)',
+            timeParts: {
               minute: cstTime.getUTCMinutes(),
               hour: cstTime.getUTCHours(),
               day: cstTime.getUTCDate(),
               month: cstTime.getUTCMonth() + 1,
               weekday: cstTime.getUTCDay(),
+              year: cstTime.getUTCFullYear(),
             },
+          };
+        };
+
+        const baseTimeInfo = formatCSTTime(baseDate);
+        
+        return jsonResponse({
+          success: true,
+          data: {
+            cron,
+            baseTime: {
+              iso: baseDate.toISOString(),
+              cst: baseTimeInfo.cst,
+              cstFormatted: baseTimeInfo.cstFormatted,
+            },
+            nextTriggerTimes: nextTimes.map((time, index) => ({
+              index: index + 1,
+              ...formatCSTTime(time),
+              // 计算距离基础时间的分钟数
+              minutesFromBase: Math.round((time.getTime() - baseDate.getTime()) / (60 * 1000)),
+            })),
+            count: nextTimes.length,
             timezone: 'UTC+8 (CST)',
+            note: nextTimes.length < 5 ? '在一年内未找到足够的触发时间' : null,
           },
         }, corsHeaders);
       }
