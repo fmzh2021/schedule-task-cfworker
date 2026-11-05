@@ -5,7 +5,10 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --local",
+    "test": "node --test test/*.test.js",
+    "test:runtime": "npm run build && node --test test/runtime.test.mjs",
+    "build": "wrangler deploy --dry-run --outdir dist",
     "deploy": "wrangler deploy"
   },
   "keywords": [
@@ -17,6 +20,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "miniflare": "3.20250718.2",
     "wrangler": "^3.0.0"
   }
 }
