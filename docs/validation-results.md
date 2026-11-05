@@ -1,6 +1,6 @@
-# 本地验证结果
+# 本地与生产验证结果
 
-日期：2026-11-05（Asia/Shanghai）。本记录为显式 SQL 表升级的本地测试；没有部署、操作远程 KV、真实通知、线上任务或 GitHub workflow 调用。先前生产迁移和 master 自动部署另见 [上线记录](first-release.md)，不属于这里的模拟验收。
+日期：2026-11-05（Asia/Shanghai）。本记录包含显式 SQL 表升级的本地测试，以及随后 master 自动部署后的只读生产核验。生产核验没有调用任务 CRUD、手动触发或写入 SQL；自然 Cron 两次均未匹配任务，因此没有真实通知请求。
 
 ## 执行结果
 
@@ -12,6 +12,30 @@
 | `git diff --check` | 退出码 0，无空白错误 |
 
 环境：Node.js 22.22.0、Wrangler 3.114.15、Miniflare 3.20250718.2。新增的模拟 SQL 使用 Node 内置 `node:sqlite`（会有 ExperimentalWarning），没有新增依赖。现有 Wrangler 会显示版本提示，本次没有升级依赖、修改锁文件或改变部署工作流。
+
+## 生产发布后的核验
+
+功能分支 `codex/sqlite-task-tables` 已合并到 master，合并提交为 `d42bea0`。GitHub Actions 的三个 job（测试构建、Cloudflare 只读配置检查、部署）全部成功：[Actions 运行记录](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41993793057)。Cloudflare 最新部署版本为 `42a23b1f-2130-41f1-ab41-2109bee83308`，部署时间为 2026-11-05 16:21:51（北京时间）。
+
+发布前和发布后均通过现有管理 API 导出任务快照，3 个任务的完整 JSON、ID、顺序、内容摘要、revision 和鉴权绑定均一致。发布后状态为 `migrated:true`、`mode:active`、`storageBackend:"sqlite"`、`schemaVersion:2`、`taskCount:3`、`revision:1`；转换没有增加 revision。
+
+通过 Cloudflare Durable Objects SQL Query API 对生产对象执行只读查询，结果如下：
+
+```json
+{
+  "tables": ["_cf_KV", "scheduler_schema", "scheduler_state", "tasks"],
+  "taskRows": 3,
+  "stateRows": 1,
+  "schemaVersion": 2,
+  "initialized": 1,
+  "mode": "active",
+  "revision": 1,
+  "quickCheck": "ok",
+  "rowsWritten": 0
+}
+```
+
+`tasks` 的三行 `config_json` 与派生的 `name/cron/enabled` 列逐行核对一致；查询没有写入。连续约 95 秒的线上 tail 观察捕获两个自然 Cron，结果均为 `ok`，任务数均为 3、revision 均为 1、匹配数为 0、失败数为 0；`tasks_loaded` 的 KV `get/list/put/delete` 计数全部为 0。生产核验的私有原始结果保存在 `~/.scheduler-private/2026-11-05-sql-tables-deployment/`，未提交仓库。
 
 ## 1,440 次冷实例模拟
 
