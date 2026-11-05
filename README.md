@@ -2,6 +2,10 @@
 
 Cloudflare Worker 定时任务调度平台，支持配置调度规则、API 参数配置和 POST 请求。
 
+本地修复版使用单个 SQLite Durable Object 保存完整任务集合。保留每分钟 Cron，正常调度及任务 API 不再访问 KV；`TASKS_KV` 仅用于迁移、备份和回滚。
+
+**升级前必须阅读 [修复交接、迁移与回滚步骤](docs/repair-handoff.md)。未迁移时任务接口和调度明确报错，不会自动 List 或将故障当成空任务。当前仅完成本地修改，没有部署。**
+
 ## 功能说明
 
 - **配置调度规则**：通过 API 动态配置任务的 cron 表达式
@@ -16,7 +20,10 @@ Cloudflare Worker 定时任务调度平台，支持配置调度规则、API 参�
 schedule-task-cfworker/
 ├── src/
 │   ├── index.js          # Worker 主文件，实现定时任务逻辑和 API
-│   ├── config.js         # 任务配置管理模块
+│   ├── config.js         # 固定名称 Durable Object 客户端
+│   ├── scheduler-store.js # 强一致任务存储及迁移/回滚
+│   ├── storage-format.js # 数据校验与摘要
+│   ├── legacy-kv.js      # 仅管理操作使用的分页 KV 访问
 │   └── cron-parser.js    # Cron 表达式解析器
 ├── examples/
 │   └── task-examples.json # 任务配置示例
@@ -53,7 +60,7 @@ npx wrangler kv:namespace create "TASKS_KV" --preview
 系统使用一个通用的 cron 触发器（每分钟执行一次），然后在代码中解析任务的 cron 表达式并判断是否应该执行。这样可以在不超过 Cloudflare Workers 的 5 个 cron 触发器限制的情况下，支持任意数量的任务和 cron 表达式。
 
 **注意**：
-- 任务配置存储在 KV 中，通过 API 动态管理
+- 任务配置存储在固定名称的 SQLite Durable Object 中，通过原 API 动态管理；KV 保留旧数据及备份
 - 不需要在 `wrangler.toml` 中为每个任务配置 cron 表达式
 - 系统会自动解析任务的 cron 表达式并判断执行时间
 
@@ -237,7 +244,7 @@ POST /api/tasks/:id/trigger
 **示例：**
 
 - `0 10 6 * *` - 每月6日10点0分
-- `0,10,30 10 6 * *` - 每月6日10点的0、10、30分（需要在 wrangler.toml 中分别配置）
+- `0,10,30 10 6 * *` - 每月6日10点的0、10、30分（无需单独配置 Worker Cron）
 - `0 9 * * 1` - 每周一9点0分
 - `*/5 * * * *` - 每5分钟执行一次
 
@@ -290,9 +297,9 @@ curl -X POST https://your-worker.workers.dev/api/tasks/task_1234567890/trigger
 
 1. **Cron 触发器限制**：Cloudflare Workers 免费计划限制最多 5 个 cron 触发器。本系统使用一个通用触发器（每分钟执行一次），在代码中解析任务的 cron 表达式，因此不受此限制影响。
 
-2. **KV 存储**：任务配置存储在 Cloudflare KV 中，需要先创建 KV 命名空间。
+2. **存储**：任务配置由 `SCHEDULER_STORE` Durable Object 管理。`TASKS_KV` 仅用于迁移/回滚；升级需要执行一次性迁移。
 
-3. **时区**：Cron 表达式使用 UTC 时区。
+3. **时区**：任务 Cron 表达式使用 UTC+8；Worker 触发器仍为 `* * * * *`。匹配使用 `event.scheduledTime`，不受实际启动延迟跨分钟影响。
 
 4. **任务执行**：系统每分钟检查一次所有任务，如果任务的 cron 表达式匹配当前时间，则执行该任务。如果多个任务使用相同的 cron 表达式，它们会在同一时间执行。
 
@@ -309,5 +316,8 @@ curl -X POST https://your-worker.workers.dev/api/tasks/task_1234567890/trigger
 
 ## 开发
 
+- 模拟 KV/fetch 验证：`npm test`
+- 本地 workerd + SQLite 验证（所有外部请求被模拟）：`npm run test:runtime`
+- 仅打包检查（不部署）：`npm run build`
 - 本地开发：`npm run dev`
 - 部署生产：`npm run deploy`
