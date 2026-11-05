@@ -72,6 +72,8 @@ npm run dev
 
 ### 5. 部署到 Cloudflare
 
+支持 [GitHub Actions 自动部署](docs/github-actions-deployment.md)：推送到 GitHub `master` 后先运行模拟测试、打包和 workerd 验证，通过后发布。首次启用前需要配置部署 Secrets、完成任务迁移，并设置 `SCHEDULER_AUTO_DEPLOY_ENABLED=true`；默认仅验证、不发布。
+
 #### 首次部署
 
 首次部署需要先登录 Cloudflare 账号：
@@ -83,7 +85,7 @@ npx wrangler login
 然后执行部署：
 
 ```bash
-npm run deploy
+npm run deploy -- --keep-vars
 ```
 
 #### 后续部署
@@ -91,7 +93,7 @@ npm run deploy
 直接执行：
 
 ```bash
-npm run deploy
+npm run deploy -- --keep-vars
 ```
 
 ## API 文档

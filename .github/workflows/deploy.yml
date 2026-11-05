@@ -1,0 +1,89 @@
+name: Verify and deploy scheduler
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  verify:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Test mocked KV, fetch, concurrency and migration
+        run: npm test
+      - name: Build and test local workerd with SQLite
+        run: npm run test:runtime
+      - name: Explain initial deployment gate
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && vars.SCHEDULER_AUTO_DEPLOY_ENABLED != 'true'
+        run: echo "::notice::Automatic deployment is disabled. Complete the initial deployment and task migration, then set repository variable SCHEDULER_AUTO_DEPLOY_ENABLED=true."
+
+  deploy:
+    name: Deploy schedule-task-cfworker
+    needs: verify
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.SCHEDULER_AUTO_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: schedule-task-cfworker-production
+      cancel-in-progress: false
+    steps:
+      - name: Check out verified source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Skip a commit superseded on master
+        id: revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq '.object.sha')
+          if [[ "$GITHUB_SHA" == "$current_sha" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping deployment because master has a newer commit."
+          fi
+      - name: Set up Node.js
+        if: steps.revision.outputs.current == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        if: steps.revision.outputs.current == 'true'
+        run: npm ci
+      - name: Deploy and preserve Dashboard variables
+        if: steps.revision.outputs.current == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "::error::Configure repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID."
+            exit 1
+          fi
+          npm run deploy -- --keep-vars
