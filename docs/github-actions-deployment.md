@@ -19,6 +19,7 @@
     → npm ci
     → 39 项模拟测试
     → dry-run 打包 + 本地 workerd / SQLite 集成测试
+    → 只读检查 Cloudflare 凭据、目标 Worker、KV 与鉴权绑定（PR 跳过）
     → 检查首次迁移开关
     → 检查该提交仍是 master 最新提交
     → wrangler deploy --keep-vars
@@ -34,7 +35,7 @@
 | 在其他分支手动运行 workflow | 执行 | 不发布 |
 | 只在本地 commit，或只推送 GitLab | 不触发 GitHub 事件 | 不发布 |
 
-一个生产发布结束后才处理下一个发布，不在中途取消部署。若旧提交的验证比新提交晚结束，发布前会检查 GitHub master 当前 SHA，跳过已过期的提交，防止旧版本覆盖新版本。测试及安装阶段不注入 Cloudflare 部署密钥。Actions 固定为已核实的 v6 commit SHA，Node.js 使用项目已验证的 22，Wrangler 使用 `package-lock.json` 锁定的版本。
+一个生产发布结束后才处理下一个发布，不在中途取消部署。若旧提交的验证比新提交晚结束，发布前会检查 GitHub master 当前 SHA，跳过已过期的提交，防止旧版本覆盖新版本。测试及安装阶段不注入 Cloudflare 部署密钥。独立的只读配置检查仅在仓库内的 push / 手动运行执行，PR 跳过；它请求 Worker settings，校验现有 KV namespace 与 API_KEY 绑定，仅输出固定状态消息，不输出 settings、凭据值或远端错误正文。只读成功证明凭据可访问目标 Worker，不能证明写权限和业务迁移已完成。Actions 固定为已核实的 v6 commit SHA，Node.js 使用项目已验证的 22，Wrangler 使用 `package-lock.json` 锁定的版本。
 
 任务执行仍由 `* * * * *` 触发；GitHub Actions 只部署代码，不执行配置中的 HTTP 任务，也不自动导入旧 KV。Wrangler 的 SQLite class migration 仅创建/升级 DO 存储，并不会迁移 `task:*` 业务数据。
 
@@ -56,8 +57,8 @@ Worker 现有的 `API_KEY` 保留在 Cloudflare，推荐使用 Worker Secret 保
 
 ## 首次启用步骤
 
-1. 将完整修复分支及 workflow 合入 GitHub 的 `master`。保持 `SCHEDULER_AUTO_DEPLOY_ENABLED` 未设置或为 `false`，这样首次合入只验证，不会切换线上未迁移的任务存储。
-2. 配置两个部署 Secret。确认 `wrangler.toml` 中 Worker 名称、KV namespace、DO binding 和 migration 历史属于目标生产环境。已有 namespace 不要重新创建或替换。
+1. 配置两个部署 Secret，先推送功能分支验证测试和 Cloudflare 只读配置检查。确认 `wrangler.toml` 中 Worker 名称、KV namespace、DO binding 和 migration 历史属于目标生产环境。已有 namespace 不要重新创建或替换。
+2. 将完整修复分支及 workflow 合入 GitHub 的 `master`。保持 `SCHEDULER_AUTO_DEPLOY_ENABLED` 未设置或为 `false`，这样首次合入只验证，不会切换线上未迁移的任务存储。
 3. 若本次 DO 业务数据迁移尚未做，按 [修复交接文档](repair-handoff.md) 安排维护窗口，冻结旧格式写入，核对独立完整清单，完成受控首次部署与 prepare/commit。首次发布可以在本地登录后执行：
 
    ```sh
@@ -91,6 +92,10 @@ git push github master
 
 官方参考：[Cloudflare GitHub Actions 部署说明](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)。
 
-## 本次本地验证
+## 本次验证
 
-2026-11-05：actionlint 1.7.12 检查该 workflow 退出码 0；39 项模拟测试、1 项 workerd / SQLite 集成测试和 dry-run 打包全部通过，`git diff --check` 通过。固定 Action SHA 已通过 GitHub tags API 核对。尚未在 GitHub runner 实际执行这个新 workflow，没有执行生产部署、触发真实任务或自动迁移。
+2026-11-05：actionlint 1.7.12 检查该 workflow 退出码 0；39 项模拟测试、1 项 workerd / SQLite 集成测试和 dry-run 打包全部通过，`git diff --check` 通过。固定 Action SHA 已通过 GitHub tags API 核对。
+
+GitHub runner [首次实际验证](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41982908299) 在功能分支提交 `a10f0d5` 上全部通过：39 项模拟测试、1 项 workerd / SQLite 集成测试与 dry-run 打包；1,440 次全新实例调度产生 1,440 次 DO 请求，KV Get/List/Put/Delete 全为 0。生产发布 job 因功能分支条件跳过，此次运行尚未包含 Cloudflare 凭据检查。
+
+用户已确认仅配置 GitHub、尚未迁移业务任务。当前保持修复在功能分支，避免合入 master 后因用户已开启发布开关而切换未迁移的生产存储。后续只读凭据检查不部署、不触发真实任务、不迁移业务数据。
