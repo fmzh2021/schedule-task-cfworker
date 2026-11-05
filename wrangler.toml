@@ -1,6 +1,8 @@
 name = "schedule-task-cfworker"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
+# 旧版本预览地址也可能接受旧格式写入；迁移后统一只使用正式入口。
+preview_urls = false
 
 # 仅用于旧任务迁移和备份/回滚；正常调度与 CRUD 不访问 KV
 [[kv_namespaces]]

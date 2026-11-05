@@ -57,6 +57,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SCHEDULER_AUTO_DEPLOY_ENABLED: ${{ vars.SCHEDULER_AUTO_DEPLOY_ENABLED }}
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
@@ -89,6 +90,9 @@ jobs:
             console.log(bindings.some(b => b.name === 'SCHEDULER_STORE' && b.type === 'durable_object_namespace')
               ? 'SCHEDULER_STORE binding exists. Business data migration must be verified separately.'
               : 'SCHEDULER_STORE binding is absent. Initial deployment and business data migration are still required.');
+            console.log(process.env.SCHEDULER_AUTO_DEPLOY_ENABLED === 'true'
+              ? 'Master automatic deployment is enabled.'
+              : 'Master automatic deployment is disabled; set repository variable SCHEDULER_AUTO_DEPLOY_ENABLED=true after task migration.');
           } catch {
             fail('Cloudflare read-only check failed due to a network error or invalid response.');
           }
