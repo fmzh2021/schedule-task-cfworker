@@ -1,17 +1,17 @@
 # 本地验证结果
 
-日期：2026-11-05（Asia/Shanghai）。仅本地数据，没有部署，没有操作远程 KV，没有真实通知、线上任务或 GitHub workflow 调用。
+日期：2026-11-05（Asia/Shanghai）。本记录为显式 SQL 表升级的本地测试；没有部署、操作远程 KV、真实通知、线上任务或 GitHub workflow 调用。先前生产迁移和 master 自动部署另见 [上线记录](first-release.md)，不属于这里的模拟验收。
 
 ## 执行结果
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm test` | **39 / 39 通过，0 失败**；本次最终运行约 6.34 秒 |
-| `npm run test:runtime` | **1 / 1 通过，0 失败**；本次最终 workerd 测试约 1.49 秒（不含前置打包） |
-| 前置 `wrangler deploy --dry-run --outdir dist` | 成功；37.70 KiB / gzip 9.62 KiB；识别 `SCHEDULER_STORE:SchedulerStore` 与 `TASKS_KV`；输出明确为 `--dry-run: exiting now` |
+| `npm test` | **56 / 56 通过，0 失败**；最终运行约 9.23 秒 |
+| `npm run test:runtime` | **2 / 2 通过，0 失败**；最终 workerd 测试约 3.75 秒（不含前置打包） |
+| 前置 `wrangler deploy --dry-run --outdir dist` | 成功；44.16 KiB / gzip 11.31 KiB；识别 `SCHEDULER_STORE:SchedulerStore` 与 `TASKS_KV`；输出明确为 `--dry-run: exiting now` |
 | `git diff --check` | 退出码 0，无空白错误 |
 
-环境：Node.js 22.22.0、Wrangler 3.114.15、Miniflare 3.20250718.2。现有 Wrangler 会显示版本提示，本次没有升级或改变部署行为。依赖锁文件使用 `npm install --package-lock-only --ignore-scripts --offline --no-audit --no-fund` 更新，未执行安装脚本。
+环境：Node.js 22.22.0、Wrangler 3.114.15、Miniflare 3.20250718.2。新增的模拟 SQL 使用 Node 内置 `node:sqlite`（会有 ExperimentalWarning），没有新增依赖。现有 Wrangler 会显示版本提示，本次没有升级依赖、修改锁文件或改变部署工作流。
 
 ## 1,440 次冷实例模拟
 
@@ -52,6 +52,11 @@
 | KV List 漏旧键 | 持久化历史 ID 仍对已删除任务发出明确删除，防止旧任务复活 |
 | 安全日志 | 注入任务名、URL/query、认证 header、params、body、外部响应、provider 错误的哨兵字符串，确认日志均不含这些字符串或 API Key |
 | 管理脚本 | 独立导出生成清单、重复 ID 拒绝、空清单显式确认；离线操作无 fetch；导出文件 0600；模拟鉴权请求不跟随重定向，敏感内容不打印 |
+| DO → SQL 转换 | 两个任务各一行，生成列可查询，完整 JSON、未知字段、缺省值、顺序、revision、历史 ID、迁移 ID 全保留；合法空集合和两种回滚冻结模式保留 |
+| 转换失败 | 非法原记录不建表；第二行插入失败或最后激活标记写入失败时，DDL、全部行、内部 KV 备份及旧键变更全部撤销；同一实例重试成功 |
+| SQL 事务 | 元数据写入失败时，已删除/替换的任务行整体恢复，重建实例后原 revision 和内容不变 |
+| SQL 损坏 | 删除任务行、删除状态、丢 tasks 表、丢全部表、直接编辑 JSON、错误激活标记、表存在但标记丢失均明确拒绝，无旧备份/KV 回退 |
+| 防误回退 | 转换后旧 DO 单键是格式标记，旧记录校验明确拒绝；原完整记录仅保留为带摘要备份，修改后重启不会重导入旧数据 |
 
 ## workerd / SQLite 验证
 
@@ -59,8 +64,12 @@
 
 验证流程：迁移一条模拟任务 → 12 个并发局部字段更新 → 读取全部 12 个字段 → 使用原定时间触发且只产生一次模拟请求 → 冻结最新快照 → 恢复旧 KV → 读回全部 12 个最新字段。实际 scheduled outcome 为 `ok`。
 
+新增检查：通过 SQL `SELECT` 确认 `tasks` 的真实行及生成列与 API 完全一致；独立测试先在实际 workerd 中故意让混合 SQL DDL/行与 DO storage KV 事务失败，确认全部撤销。再写入模拟的当前 DO 单键集合（revision 23、两个任务），在第二个 SQL 任务行处注入错误，核实没有表、没有备份/标记、旧权威记录未改；重试自动转换成功。API 更新到 revision 24 后，关闭整个 workerd 进程、以同一临时持久目录启动新进程，确认最新 SQL 状态不变、原记录备份不变。此测试的出站请求为 0。
+
+模拟存储也运行真实 SQLite SQL，使用 SAVEPOINT 仅模拟 DO 的事务 API；生产 SQL 不执行 BEGIN/SAVEPOINT。实际 workerd 使用 `storage.transaction()` 证实 SQL 与内部 KV 在一个事务中原子提交/撤销。测试专用 SQL/种子数据入口位于 `test/runtime-entry.mjs`，不被生产入口引用，也不进入 dry-run bundle。
+
 此次单任务 workerd 管理计数：准备迁移 `get:3,list:2,put:1,delete:0`；提交迁移 `get:2,list:1,put:0,delete:0`；回滚恢复 `get:5,list:3,put:2,delete:0`。中间的 12 个更新、详情读取和分钟调度的 KV 操作全部为零。这些管理用量不属于正常每分钟路径。
 
 ## 验证边界
 
-本地模拟不能证明真实 KV 跨地区传播时间、历史平台内部原因、目标账户 DO 配额或生产任务端的幂等性。旧任务的真实配置未读取或迁移，部署和生产迁移仍需按 [交接步骤](repair-handoff.md) 在维护窗口执行。迁移必须有冻结后的独立完整清单；回滚到旧 KV 版本必须继续核验传播，单节点的 `ready:true` 不保证全网即时一致。
+本地模拟不能证明真实 KV 跨地区传播时间、历史平台内部原因、目标账户 DO 配额或生产任务端的幂等性。本轮没有读取或修改生产任务；SQL 转换的实际生效须在该版本发布后核验 [状态与 Data Studio](sqlite-tables.md)。旧 KV → DO 的首次迁移已经完成，不应重跑；其他新环境迁移仍必须有冻结后的独立完整清单。回滚到旧 KV 版本必须继续核验传播，单节点的 `ready:true` 不保证全网即时一致。

@@ -31,11 +31,11 @@
 | KV 固定集合键 + DO 串行写入 | 约 1,440 Get、0 List | KV 跨节点传播延迟 | 读便宜，但禁用/删除仍可能短时执行旧配置；还需可靠发布队列 |
 | 本次实现：DO 统一读写 | **0 Get、0 List、0 Put、0 Delete** | DO 提交后，后续读取取得已提交状态 | 每分钟一次 DO 请求，增加 DO 依赖及集中访问延迟 |
 
-完整集合位于 **DO storage** 的 `scheduler:tasks:v1`，不是 `TASKS_KV` 的同名键。`TASKS_KV` 只保存旧 `task:*` 和不可变管理备份；CRUD 和 Cron 没有 KV 回退分支。特意不保留应用层任务缓存；日志 `cacheHit:false` 指应用层没有缓存，不代表平台内部 storage 缓存。
+当前源码将任务保存在 **DO SQLite** 的显式 `tasks` 表，每个任务一行；`scheduler_state` 保存运行状态、数量、revision 和摘要。最初修复版本使用的 DO storage 键 `scheduler:tasks:v1` 会在首次访问时自动完整转换并备份，不读取过时的旧 Workers KV。详见 [SQL 表升级及 Data Studio 说明](sqlite-tables.md)。`TASKS_KV` 只保存旧 `task:*` 和不可变管理备份；CRUD 和 Cron 没有 KV 回退分支。特意不保留应用层任务缓存；日志 `cacheHit:false` 指应用层没有缓存，不代表平台内部 storage 缓存。
 
 所有 Worker 通过 `SCHEDULER_STORE.idFromName('scheduler-tasks-v1')` 访问同一个对象。任务合并与保存放在 storage transaction 内。DO 内的请求队列用于防止管理导出与恢复写入交错；跨实例安全来自固定 DO 身份、持久化状态和事务，绝不是边缘模块锁。重建 DO 实例也不会丢失数据。
 
-状态中包含版本、revision、任务数量、内容摘要及历史 ID 集合。当前方案面向三个小配置；DO storage KV API 单值有大小限制，备份还保存原始 JSON，不适合未经评估直接扩大到大量大任务。
+状态中包含版本、revision、任务数量、内容摘要及历史 ID 集合。当前方案面向三个小配置；每次事务替换这几个任务行，备份仍用 DO storage KV API 保存完整快照，受单值大小限制，不适合未经评估直接扩大到大量大任务。
 
 DO 后续读取不会受 KV 传播延迟影响。不过在修改之前已经读到旧任务的执行可能继续完成；不提供取消已发请求或全局 exactly-once 保证。Cron 平台重试也可能造成重复执行，任务端应自行幂等。本修复不会补跑迁移维护期间错过的分钟。
 
@@ -141,6 +141,7 @@ node scripts/scheduler-admin.mjs discard
 | --- | --- |
 | `src/config.js` | 固定名称 DO 客户端；所有任务接口共享同一数据源，无模块任务缓存 |
 | `src/scheduler-store.js` | SQLite DO、事务化增删改查、迁移状态机、不可变备份、回滚冻结与恢复 |
+| `src/sql-task-storage.js` | 显式 tasks/state/schema 表、当前 DO 记录自动转换、完整备份及防止过时回退 |
 | `src/storage-format.js` | 数据格式、数量/ID/摘要验证、稳定错误码与安全异常 |
 | `src/legacy-kv.js` | 仅管理路径使用的分页 KV、操作计数、源数据校验 |
 | `src/index.js` | 原 API 接入 DO；PUT 事务内合并；scheduledTime；安全日志；Cron 失败可观察 |
@@ -164,7 +165,7 @@ git diff --check
 
 ## 回滚建议与步骤
 
-优先回滚业务代码时继续保留当前 DO 数据源、对象名称和 migration，任务最新状态无需搬迁。**不能把迁移前保留的旧 `task:*` 直接当最新状态**：它们不会随新 CRUD 自动更新。
+优先回滚业务代码时继续保留当前 **SQL 存储层**、DO 对象名称和 migration，任务最新状态无需搬迁。SQL 转换后，升级前的 DO 单键代码会明确拒绝格式标记；不要直接发布升级前整个版本。**不能把迁移前保留的旧 `task:*` 或 SQL 转换原始备份直接当最新状态**：它们不会随新 CRUD 自动更新。
 
 如果必须恢复到旧 KV 读写版本，按以下维护流程导出**最新**状态：
 
