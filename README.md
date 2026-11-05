@@ -4,7 +4,7 @@ Cloudflare Worker 定时任务调度平台，支持配置调度规则、API 参�
 
 本地修复版使用单个 SQLite Durable Object 保存完整任务集合。保留每分钟 Cron，正常调度及任务 API 不再访问 KV；`TASKS_KV` 仅用于迁移、备份和回滚。
 
-**升级前必须阅读 [修复交接、迁移与回滚步骤](docs/repair-handoff.md)。未迁移时任务接口和调度明确报错，不会自动 List 或将故障当成空任务。当前仅完成本地修改，没有部署。**
+**2026-11-05 已完成首次部署和三个任务迁移，见 [上线记录与后续发布方式](docs/first-release.md)。之后合并完整修复到 GitHub master 即自动验证并发布，无需重复迁移。恢复旧入口前必须阅读 [迁移与回滚步骤](docs/repair-handoff.md)，避免使用过时 KV。**
 
 ## 功能说明
 

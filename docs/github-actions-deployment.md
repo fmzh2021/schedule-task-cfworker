@@ -1,5 +1,7 @@
 # GitHub Actions 自动部署
 
+**当前状态：2026-11-05 首次部署和三个任务迁移已完成，自动发布开关已启用。后续合并完整修复到 master 会自动验证并尝试发布，无需重复迁移。** 具体结果、权限验证范围与备份位置见[首次上线记录](first-release.md)。下文“首次启用步骤”保留用于重建环境。
+
 ## 当前部署方式与核查范围
 
 工程的发布入口是 `package.json` 中的 `npm run deploy`，实际执行 `wrangler deploy`。Wrangler 根据根目录 `wrangler.toml` 打包 `src/index.js`，发布到 `schedule-task-cfworker`，同时应用 `TASKS_KV`、`SCHEDULER_STORE`、SQLite DO migration 和每分钟 Cron 配置。`npm run build` 只是 `--dry-run`，不会发布。
@@ -98,6 +100,6 @@ git push github master
 
 GitHub runner [首次实际验证](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41982908299) 在功能分支提交 `a10f0d5` 上全部通过：39 项模拟测试、1 项 workerd / SQLite 集成测试与 dry-run 打包；1,440 次全新实例调度产生 1,440 次 DO 请求，KV Get/List/Put/Delete 全为 0。生产发布 job 因功能分支条件跳过，此次运行尚未包含 Cloudflare 凭据检查。
 
-用户已确认仅配置 GitHub、尚未迁移业务任务。当前保持修复在功能分支，避免合入 master 后因用户已开启发布开关而切换未迁移的生产存储。后续只读凭据检查不部署、不触发真实任务、不迁移业务数据。
+初次验证时用户仅配置 GitHub、尚未迁移业务任务，因此保持修复在功能分支，避免提前合入 master 后切换未迁移的生产存储。随后用户请求代办迁移，已使用本地现有 Cloudflare 登录完成首次部署与迁移，详见首次上线记录；功能分支的只读配置检查本身仍不部署、不触发任务、不迁移数据。
 
 GitHub runner [加入只读检查后的验证](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41983378327) 在提交 `7e4ef86` 上成功：测试与打包再次通过，两个 GitHub Secrets 可访问目标 Worker，线上 `TASKS_KV` 与配置一致且存在 `API_KEY` 绑定。线上尚无 `SCHEDULER_STORE` 绑定，需完成受控首次部署及业务迁移；此次生产发布 job 仍按功能分支条件跳过。没有测试 Cloudflare 写权限或发布操作，没有变更线上 Worker、KV 或调度配置。
