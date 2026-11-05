@@ -28,7 +28,7 @@
 | 事件 | 测试及打包 | 发布 |
 | --- | --- | --- |
 | PR 目标为 master | 执行 | 不发布，不提供 Cloudflare 凭据 |
-| push 到 feature/** 或 codex/** | 执行 | 不发布，不提供 Cloudflare 凭据 |
+| push 到 feature/** 或 codex/** | 执行，另做 Cloudflare 只读配置检查 | 不发布 |
 | push 到 master，启用变量未设或不是 `true` | 执行 | 跳过，提示首次迁移要求 |
 | push 到 master，启用变量为 `true` | 执行 | 验证全部通过后发布 |
 | 在 master 手动运行 workflow | 执行 | 同样受启用变量约束 |
@@ -99,3 +99,5 @@ git push github master
 GitHub runner [首次实际验证](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41982908299) 在功能分支提交 `a10f0d5` 上全部通过：39 项模拟测试、1 项 workerd / SQLite 集成测试与 dry-run 打包；1,440 次全新实例调度产生 1,440 次 DO 请求，KV Get/List/Put/Delete 全为 0。生产发布 job 因功能分支条件跳过，此次运行尚未包含 Cloudflare 凭据检查。
 
 用户已确认仅配置 GitHub、尚未迁移业务任务。当前保持修复在功能分支，避免合入 master 后因用户已开启发布开关而切换未迁移的生产存储。后续只读凭据检查不部署、不触发真实任务、不迁移业务数据。
+
+GitHub runner [加入只读检查后的验证](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41983378327) 在提交 `7e4ef86` 上成功：测试与打包再次通过，两个 GitHub Secrets 可访问目标 Worker，线上 `TASKS_KV` 与配置一致且存在 `API_KEY` 绑定。线上尚无 `SCHEDULER_STORE` 绑定，需完成受控首次部署及业务迁移；此次生产发布 job 仍按功能分支条件跳过。没有测试 Cloudflare 写权限或发布操作，没有变更线上 Worker、KV 或调度配置。
