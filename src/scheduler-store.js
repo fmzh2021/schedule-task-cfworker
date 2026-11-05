@@ -1,5 +1,6 @@
-import { SchedulerError, TASKS_KEY, canonical, makeSnapshot, manifestFor, object, safeError, sha256,
+import { SchedulerError, canonical, makeSnapshot, manifestFor, object, safeError, sha256,
   validateSnapshot, validateTask } from './storage-format.js';
+import { SQLTaskStorage } from './sql-task-storage.js';
 import { assertManifest, countedKV, listLegacyKeys, scanLegacy, validateExpected } from './legacy-kv.js';
 
 const CANDIDATE_KEY = 'migration-candidate:v1';
@@ -30,6 +31,7 @@ const backupSummary = backup => ({ id: backup.id, backupKey: backupKey(backup.id
 export class SchedulerStore {
   constructor(state, env) {
     this.storage = state.storage;
+    this.records = new SQLTaskStorage(state.storage);
     this.env = env;
     // This queue is inside the ONE named Durable Object, not an edge Worker/module
     // lock. It also prevents administrative KV exports interleaving with resume.
@@ -43,29 +45,24 @@ export class SchedulerStore {
     return result;
   }
 
-  async record(storage = this.storage, required = true) {
-    const value = await storage.get(TASKS_KEY);
-    if (value === undefined) {
+  async record(required = true) {
+    // SQL statements participate in the active state.storage transaction.
+    const value = await this.records.read();
+    if (value === null) {
       if (required) throw new SchedulerError('NOT_MIGRATED');
       return null;
     }
-    if (!object(value) || !['active', 'rollback-frozen', 'rollback-ready'].includes(value.mode) ||
-        typeof value.migrationId !== 'string' || !Array.isArray(value.knownTaskIds) ||
-        value.knownTaskIds.some(id => typeof id !== 'string' || !id) ||
-        new Set(value.knownTaskIds).size !== value.knownTaskIds.length) throw new SchedulerError('DATA_CORRUPT', 500);
-    await validateSnapshot(value.snapshot);
-    if (value.snapshot.tasks.some(task => !value.knownTaskIds.includes(task.id))) throw new SchedulerError('DATA_CORRUPT', 500);
     return value;
   }
 
   async mutate(operation) {
-    return this.storage.transaction(async tx => {
-      const record = await this.record(tx);
+    return this.storage.transaction(async () => {
+      const record = await this.record();
       if (record.mode !== 'active') throw new SchedulerError('WRITES_FROZEN', 409);
       const result = await operation(record.snapshot.tasks);
       record.knownTaskIds = [...new Set([...record.knownTaskIds, ...record.snapshot.tasks.map(task => task.id)])];
       record.snapshot = await makeSnapshot(record.snapshot.tasks, record.snapshot.revision + 1);
-      await tx.put(TASKS_KEY, record);
+      this.records.write(record);
       return result;
     });
   }
@@ -75,6 +72,7 @@ export class SchedulerStore {
     const kv = countedKV(this.env.TASKS_KV, counts);
     const url = new URL(request.url), path = url.pathname, method = request.method;
     try {
+      await this.records.ensure();
       let data;
       if (path === '/tasks' && method === 'GET') {
         data = (await this.record()).snapshot;
@@ -102,9 +100,10 @@ export class SchedulerStore {
           return true;
         });
       } else if (path === '/admin/status' && method === 'GET') {
-        const record = await this.record(this.storage, false);
+        const record = await this.record(false);
         const candidateId = await this.storage.get(CANDIDATE_KEY);
-        data = record ? summary(record) : { migrated: false, mode: 'uninitialized', candidateId: candidateId || null };
+        data = { ...(record ? summary(record) : { migrated: false, mode: 'uninitialized', candidateId: candidateId || null }),
+          storageBackend: 'sqlite', schemaVersion: 2 };
       } else if (path === '/admin/export' && method === 'GET') {
         data = (await this.record()).snapshot;
       } else if (path === '/admin/backup' && method === 'GET') {
@@ -115,7 +114,7 @@ export class SchedulerStore {
         data = await this.commitMigration(await json(request), kv);
       } else if (path === '/admin/migration/discard' && method === 'POST') {
         data = await this.storage.transaction(async tx => {
-          if (await this.record(tx, false)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
+          if (await this.record(false)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
           await tx.delete(CANDIDATE_KEY); // Immutable DO/KV backups deliberately retained.
           return { discarded: true };
         });
@@ -124,11 +123,11 @@ export class SchedulerStore {
       } else if (path === '/admin/rollback/restore' && method === 'POST') {
         data = await this.restoreLegacy(await json(request), kv);
       } else if (path === '/admin/rollback/resume' && method === 'POST') {
-        data = await this.storage.transaction(async tx => {
-          const record = await this.record(tx);
+        data = await this.storage.transaction(async () => {
+          const record = await this.record();
           record.mode = 'active';
           delete record.rollbackId;
-          await tx.put(TASKS_KEY, record);
+          this.records.write(record);
           return summary(record);
         });
       } else {
@@ -155,7 +154,7 @@ export class SchedulerStore {
   }
 
   async prepareMigration(input, kv) {
-    const record = await this.record(this.storage, false);
+    const record = await this.record(false);
     if (record) return { alreadyMigrated: true, ...summary(record) };
     if (input.sourceFrozen !== true) throw new SchedulerError('SOURCE_NOT_FROZEN', 409);
     const expected = validateExpected(input.expected, input.allowEmpty);
@@ -170,7 +169,7 @@ export class SchedulerStore {
       backup = await sealBackup({ kind: 'migration', id: crypto.randomUUID(), createdAt: new Date().toISOString(),
         snapshot: await makeSnapshot(second.tasks), expected, entries: second.entries });
       await this.storage.transaction(async tx => {
-        if (await this.record(tx, false) || await tx.get(CANDIDATE_KEY)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
+        if (await this.record(false) || await tx.get(CANDIDATE_KEY)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
         await tx.put(backupKey(backup.id), backup);
         await tx.put(CANDIDATE_KEY, backup.id);
       });
@@ -180,7 +179,7 @@ export class SchedulerStore {
   }
 
   async commitMigration(input, kv) {
-    const record = await this.record(this.storage, false);
+    const record = await this.record(false);
     if (record) return { alreadyMigrated: true, ...summary(record) };
     if (input.sourceFrozen !== true) throw new SchedulerError('SOURCE_NOT_FROZEN', 409);
     const id = await this.storage.get(CANDIDATE_KEY);
@@ -188,26 +187,26 @@ export class SchedulerStore {
     const backup = await checkBackup(await this.storage.get(backupKey(id)));
     await this.verifyPublishedBackup(kv, backup);
     assertManifest((await scanLegacy(kv)).manifest, backup.expected);
-    return this.storage.transaction(async tx => {
-      const existing = await this.record(tx, false);
+    return this.storage.transaction(async () => {
+      const existing = await this.record(false);
       if (existing) return { alreadyMigrated: true, ...summary(existing) };
       const next = { mode: 'active', migrationId: id, snapshot: backup.snapshot,
         knownTaskIds: backup.snapshot.tasks.map(task => task.id) };
-      await tx.put(TASKS_KEY, next); // Atomic cutover; old task:* keys are never deleted here.
+      this.records.write(next); // Atomic cutover; old task:* keys are never deleted here.
       return summary(next);
     });
   }
 
   async prepareRollback() {
     const backup = await this.storage.transaction(async tx => {
-      const record = await this.record(tx);
+      const record = await this.record();
       if (record.mode !== 'active') return checkBackup(await tx.get(backupKey(record.rollbackId)));
       const backup = await sealBackup({ kind: 'rollback', id: crypto.randomUUID(),
         createdAt: new Date().toISOString(), snapshot: record.snapshot });
       await tx.put(backupKey(backup.id), backup);
       record.mode = 'rollback-frozen';
       record.rollbackId = backup.id;
-      await tx.put(TASKS_KEY, record);
+      this.records.write(record);
       return backup;
     });
     return { frozen: true, ...backupSummary(backup) };
@@ -238,7 +237,7 @@ export class SchedulerStore {
       if (!desired.has(key) && await kv.get(key) !== null) throw new SchedulerError('ROLLBACK_MISMATCH', 409);
     }
     record.mode = 'rollback-ready';
-    await this.storage.put(TASKS_KEY, record);
+    await this.storage.transaction(() => { this.records.write(record); });
     return { ready: true, ...backupSummary(backup) };
   }
 }

@@ -1,21 +1,43 @@
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import { SchedulerStore } from '../src/scheduler-store.js';
 import { STORE_NAME } from '../src/storage-format.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
 export class FakeStorage {
-  constructor() { this.data = new Map(); this.tail = Promise.resolve(); this.fail = false; }
+  constructor(database = new DatabaseSync(':memory:')) {
+    this.database = database;
+    this.data = new Map(); this.tail = Promise.resolve(); this.fail = false;
+    this.sequence = 0;
+    this.sql = { exec: (query, ...bindings) => {
+      if (this.fail) throw new Error('provider-secret');
+      this.beforeSQL?.(query, bindings);
+      const statement = database.prepare(query);
+      const rows = statement.columns().length ? statement.all(...bindings) : (statement.run(...bindings), []);
+      return { toArray: () => rows.map(row => ({ ...row })), [Symbol.iterator]: () => rows[Symbol.iterator]() };
+    } };
+  }
   async get(key) { if (this.fail) throw new Error('provider-secret'); return clone(this.data.get(key)); }
   async put(key, value) { if (this.fail) throw new Error('provider-secret'); this.data.set(key, clone(value)); }
   async delete(key) { if (this.fail) throw new Error('provider-secret'); return this.data.delete(key); }
   transaction(callback) {
     const run = this.tail.then(async () => {
       if (this.fail) throw new Error('provider-secret');
-      const working = new FakeStorage();
+      const working = new FakeStorage(this.database);
       working.data = clone(this.data);
-      const result = await callback(working);
-      this.data = working.data;
-      return result;
+      const savepoint = `fake_tx_${++this.sequence}`;
+      // SAVEPOINT emulates the DO transaction API here, never in production.
+      this.database.exec(`SAVEPOINT ${savepoint}`);
+      try {
+        const result = await callback(working);
+        this.database.exec(`RELEASE ${savepoint}`);
+        this.data = working.data;
+        return result;
+      } catch (error) {
+        this.database.exec(`ROLLBACK TO ${savepoint}`);
+        this.database.exec(`RELEASE ${savepoint}`);
+        throw error;
+      }
     });
     this.tail = run.catch(() => {});
     return run;

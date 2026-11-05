@@ -2,9 +2,11 @@
 
 Cloudflare Worker 定时任务调度平台，支持配置调度规则、API 参数配置和 POST 请求。
 
-本地修复版使用单个 SQLite Durable Object 保存完整任务集合。保留每分钟 Cron，正常调度及任务 API 不再访问 KV；`TASKS_KV` 仅用于迁移、备份和回滚。
+本地修复版使用单个 SQLite Durable Object，显式 `tasks` 表每个任务一行，可在 Data Studio 查询。保留每分钟 Cron，正常调度及任务 API 不再访问 KV；`TASKS_KV` 仅用于迁移、备份和回滚。
 
 **2026-11-05 已完成首次部署和三个任务迁移，见 [上线记录与后续发布方式](docs/first-release.md)。之后合并完整修复到 GitHub master 即自动验证并发布，无需重复迁移。恢复旧入口前必须阅读 [迁移与回滚步骤](docs/repair-handoff.md)，避免使用过时 KV。**
+
+**本次显式 SQL 表升级会自动转换当前 DO 的最新数据，无需手工重建任务。Data Studio 对象选择、查询 SQL、升级备份及回滚限制见 [SQLite 表操作说明](docs/sqlite-tables.md)。**
 
 ## 功能说明
 
@@ -22,6 +24,7 @@ schedule-task-cfworker/
 │   ├── index.js          # Worker 主文件，实现定时任务逻辑和 API
 │   ├── config.js         # 固定名称 Durable Object 客户端
 │   ├── scheduler-store.js # 强一致任务存储及迁移/回滚
+│   ├── sql-task-storage.js # 显式 SQL 表及当前 DO 数据自动升级
 │   ├── storage-format.js # 数据校验与摘要
 │   ├── legacy-kv.js      # 仅管理操作使用的分页 KV 访问
 │   └── cron-parser.js    # Cron 表达式解析器
@@ -43,7 +46,7 @@ npm install
 
 ### 2. 创建 KV 命名空间
 
-在部署前，需要创建 KV 命名空间来存储任务配置：
+本工程已有 `TASKS_KV`，不需要重新创建。只有新环境才需要创建命名空间，供旧数据迁移、管理备份和回滚使用；活动任务保存在 DO SQL 表中：
 
 ```bash
 # 创建生产环境 KV 命名空间
@@ -299,7 +302,7 @@ curl -X POST https://your-worker.workers.dev/api/tasks/task_1234567890/trigger
 
 1. **Cron 触发器限制**：Cloudflare Workers 免费计划限制最多 5 个 cron 触发器。本系统使用一个通用触发器（每分钟执行一次），在代码中解析任务的 cron 表达式，因此不受此限制影响。
 
-2. **存储**：任务配置由 `SCHEDULER_STORE` Durable Object 管理。`TASKS_KV` 仅用于迁移/回滚；升级需要执行一次性迁移。
+2. **存储**：任务配置由 `SCHEDULER_STORE` Durable Object 的 `tasks` 表管理。`TASKS_KV` 仅用于迁移/回滚；旧 KV → DO 的首次迁移需按文档执行，已有 DO → SQL 表升级自动完成。
 
 3. **时区**：任务 Cron 表达式使用 UTC+8；Worker 触发器仍为 `* * * * *`。匹配使用 `event.scheduledTime`，不受实际启动延迟跨分钟影响。
 

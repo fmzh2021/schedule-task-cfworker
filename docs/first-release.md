@@ -2,11 +2,13 @@
 
 ## 你现在需要做什么
 
-首次部署和 KV → Durable Object 迁移已经代办完成。后续将完整修复分支 `feature/f-20251206-alertPlatform` 合并到 GitHub 的 `master`，工作流会自动运行测试、打包、Cloudflare 配置检查，通过后发布。**不需要每次再迁移数据，也不需要手工重建任务。**
+首次部署和 KV → Durable Object 迁移已经代办完成，修复已合并 GitHub `master`。后续功能分支合并、推送到 `master`，工作流会自动运行测试、打包、Cloudflare 配置检查，通过后发布。**不需要每次再迁移数据，也不需要手工重建任务。**
 
 `SCHEDULER_AUTO_DEPLOY_ENABLED=true` 已由 GitHub runner 确认。这个开关、两个部署 Secrets 和当前 `wrangler.toml` 需继续保留。普通任务增删改由线上 API 写入 DO，和代码发布分开管理。
 
-实际自动发布仍以 Actions 的 `Deploy schedule-task-cfworker` 成功为准：此前 GitHub Token 仅验证过只读访问，本次首次部署使用本地现有的 Cloudflare OAuth 登录；没有通过合并 master 验证 GitHub Token 的写权限。若未来自动发布失败，先看对应 job 错误，不要重复迁移或清空 DO。
+首次部署使用本地现有的 Cloudflare OAuth 登录；随后 `a1e3e91` 的 [master Actions](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41987373248) 已成功完成自动发布，验证了 GitHub 部署凭据的写权限，版本为 `9da4765a-7d45-43df-9fdd-764063dfdef5`。之后的发布仍以 `Deploy schedule-task-cfworker` 成功为准；失败时先看对应 job，不要重复迁移或清空 DO。
+
+当前新增的显式 SQLite 表升级在第一次 API/Cron 访问时自动转换**当前 DO** 的最新记录，不重新读取旧 KV。Data Studio 查看方法和回退限制见 [SQL 表操作说明](sqlite-tables.md)。
 
 ## 2026-11-05 实际操作记录
 
@@ -24,9 +26,9 @@
 
 DO 和 `TASKS_KV` 中的不可变迁移备份也保留。本地 `migration-prepared.json` 记录备份标识。已准备保留 `SchedulerStore` 类的旧入口回退文件，并通过 dry-run 打包；未实际执行回退。
 
-## 不要直接回退到旧 master
+## 不要直接回退到迁移前版本
 
-当前 GitHub master 在合并修复前仍是旧实现。DO 激活之后，新建、更新、删除的最新状态只在 DO 中；旧 KV 会逐渐过时。直接发布旧代码可能恢复过时配置。
+迁移前实现可在 Git 历史查看。DO 激活之后，新建、更新、删除的最新状态只在 DO 中；旧 KV 会逐渐过时。直接发布旧代码可能恢复过时配置。显式 SQL 转换成功后也不能直接发布旧 DO 单键版本；保留 SQL 存储层回滚业务修改，或按下述流程恢复最新旧格式。
 
 需要恢复旧 KV 入口时，必须先从 DO 冻结并导出最新状态，再恢复 KV、完整校验，最后发布保留 DO 类和迁移历史的回退入口。详细命令见[修复交接文档的回滚步骤](repair-handoff.md#回滚建议与步骤)。
 

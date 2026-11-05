@@ -65,3 +65,15 @@ export async function validateSnapshot(snapshot) {
   }
   return snapshot;
 }
+export async function validateRecord(value) {
+  if (!object(value) || !['active', 'rollback-frozen', 'rollback-ready'].includes(value.mode) ||
+      typeof value.migrationId !== 'string' || !Array.isArray(value.knownTaskIds) ||
+      value.knownTaskIds.some(id => typeof id !== 'string' || !id) ||
+      new Set(value.knownTaskIds).size !== value.knownTaskIds.length ||
+      (value.rollbackId !== undefined && typeof value.rollbackId !== 'string')) {
+    throw new SchedulerError('DATA_CORRUPT', 500);
+  }
+  await validateSnapshot(value.snapshot);
+  if (value.snapshot.tasks.some(task => !value.knownTaskIds.includes(task.id))) throw new SchedulerError('DATA_CORRUPT', 500);
+  return value;
+}

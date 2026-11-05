@@ -1,7 +1,7 @@
 import { after, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker, { executeTask } from '../src/index.js';
-import { TASKS_KEY, canonical, manifestFor } from '../src/storage-format.js';
+import { canonical, manifestFor } from '../src/storage-format.js';
 import { harness, context, task } from './fakes.js';
 
 const originalFetch = globalThis.fetch;
@@ -174,7 +174,7 @@ test('unmigrated, corrupted and legitimate empty state are distinct; scheduled f
   const h = harness();
   assert.equal((await api(h, '/api/tasks')).value.code, 'NOT_MIGRATED');
   await assert.rejects(tick(h, Date.now()), { code: 'NOT_MIGRATED' });
-  await h.storage.put(TASKS_KEY, { invalid: true });
+  h.storage.sql.exec('UPDATE scheduler_schema SET initialized = 1');
   assert.equal((await api(h, '/api/tasks')).value.code, 'DATA_CORRUPT');
   await assert.rejects(tick(h, Date.now()), { code: 'DATA_CORRUPT' });
   assert.equal(calls.length, 0);
@@ -185,9 +185,7 @@ test('unmigrated, corrupted and legitimate empty state are distinct; scheduled f
 
 test('snapshot checksum detects content corruption', async () => {
   const h = await migrated([task('a')]);
-  const value = await h.storage.get(TASKS_KEY);
-  value.snapshot.tasks[0].enabled = false;
-  await h.storage.put(TASKS_KEY, value);
+  h.storage.sql.exec(`UPDATE tasks SET config_json = json_set(config_json, '$.enabled', json('false'))`);
   assert.equal((await api(h, '/api/tasks')).value.code, 'DATA_CORRUPT');
 });
 
@@ -211,7 +209,7 @@ test('failed DO commit never activates a partial collection and can be retried',
   h.storage.transaction = () => Promise.reject(new Error('provider-secret'));
   const body = { sourceFrozen: true, id: prepared.value.data.id };
   assert.equal((await api(h, '/api/admin/migration/commit', 'POST', body)).value.code, 'STORAGE_UNAVAILABLE');
-  assert.equal(await h.storage.get(TASKS_KEY), undefined);
+  assert.deepEqual(h.storage.sql.exec('SELECT * FROM scheduler_state').toArray(), []);
   h.storage.transaction = transaction;
   assert.equal((await api(h, '/api/admin/migration/commit', 'POST', body)).status, 200);
 });
@@ -248,7 +246,7 @@ for (const kind of ['missing', 'extra', 'changed', 'wrong-id', 'invalid-json', '
     if (kind === 'invalid-json') h.kv.data.set('task:b', '{broken');
     if (kind === 'disappeared') h.kv.hook = async (op, key) => { if (op === 'get' && key === 'task:b') h.kv.data.delete(key); };
     assert.ok((await prepare(h, tasks)).status >= 400);
-    assert.equal(await h.storage.get(TASKS_KEY), undefined);
+    assert.deepEqual(h.storage.sql.exec('SELECT * FROM scheduler_state').toArray(), []);
     assert.equal(h.kv.calls.put, 0);
     assert.equal(calls.length, 0);
   });
@@ -258,7 +256,7 @@ test('mutation between scans is detected', async () => {
   const tasks = [task('a')], h = harness(tasks);
   h.kv.hook = async op => { if (op === 'list' && h.kv.calls.list === 2) h.kv.data.set('task:a', JSON.stringify(task('a', { enabled: false }))); };
   assert.equal((await prepare(h, tasks)).value.code, 'MIGRATION_MISMATCH');
-  assert.equal(await h.storage.get(TASKS_KEY), undefined);
+  assert.deepEqual(h.storage.sql.exec('SELECT * FROM scheduler_state').toArray(), []);
 });
 
 test('empty manifest requires explicit allowEmpty; source freeze is mandatory', async () => {
@@ -273,7 +271,7 @@ for (const operation of ['list', 'get', 'put']) {
     const tasks = [task('a')], h = harness(tasks);
     h.kv.fail = operation;
     assert.equal((await prepare(h, tasks)).value.code, 'KV_UNAVAILABLE');
-    assert.equal(await h.storage.get(TASKS_KEY), undefined);
+    assert.deepEqual(h.storage.sql.exec('SELECT * FROM scheduler_state').toArray(), []);
     h.kv.fail = null;
     h.reboot();
     const prepared = await prepare(h, tasks);
@@ -291,7 +289,7 @@ test('stale KV backup blocks commit; source drift blocks commit; discard keeps b
   h.kv.data.set(backupKey, raw);
   h.kv.data.set('task:a', JSON.stringify(task('a', { enabled: false })));
   assert.equal((await api(h, '/api/admin/migration/commit', 'POST', { sourceFrozen: true, id })).value.code, 'MIGRATION_MISMATCH');
-  assert.equal(await h.storage.get(TASKS_KEY), undefined);
+  assert.deepEqual(h.storage.sql.exec('SELECT * FROM scheduler_state').toArray(), []);
   assert.equal((await api(h, '/api/admin/migration/discard', 'POST', {})).status, 200);
   assert.ok(await h.storage.get(backupKey));
   assert.ok(h.kv.data.has(backupKey));
