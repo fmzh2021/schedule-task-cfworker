@@ -1,6 +1,6 @@
 import { SchedulerError, canonical, makeSnapshot, manifestFor, object, safeError, sha256,
   validateSnapshot, validateTask } from './storage-format.js';
-import { SQLTaskStorage } from './sql-task-storage.js';
+import { EditableTaskStorage } from './editable-task-storage.js';
 import { assertManifest, countedKV, listLegacyKeys, scanLegacy, validateExpected } from './legacy-kv.js';
 
 const CANDIDATE_KEY = 'migration-candidate:v1';
@@ -31,7 +31,7 @@ const backupSummary = backup => ({ id: backup.id, backupKey: backupKey(backup.id
 export class SchedulerStore {
   constructor(state, env) {
     this.storage = state.storage;
-    this.records = new SQLTaskStorage(state.storage);
+    this.records = new EditableTaskStorage(state.storage);
     this.env = env;
     // This queue is inside the ONE named Durable Object, not an edge Worker/module
     // lock. It also prevents administrative KV exports interleaving with resume.
@@ -45,7 +45,8 @@ export class SchedulerStore {
     return result;
   }
 
-  async record(required = true) {
+  async record(required = true, inTransaction = false) {
+    if (!inTransaction) return this.records.transaction(() => this.record(required, true));
     // SQL statements participate in the active state.storage transaction.
     const value = await this.records.read();
     if (value === null) {
@@ -56,8 +57,8 @@ export class SchedulerStore {
   }
 
   async mutate(operation) {
-    return this.storage.transaction(async () => {
-      const record = await this.record();
+    return this.records.transaction(async () => {
+      const record = await this.record(true, true);
       if (record.mode !== 'active') throw new SchedulerError('WRITES_FROZEN', 409);
       const result = await operation(record.snapshot.tasks);
       record.knownTaskIds = [...new Set([...record.knownTaskIds, ...record.snapshot.tasks.map(task => task.id)])];
@@ -103,7 +104,7 @@ export class SchedulerStore {
         const record = await this.record(false);
         const candidateId = await this.storage.get(CANDIDATE_KEY);
         data = { ...(record ? summary(record) : { migrated: false, mode: 'uninitialized', candidateId: candidateId || null }),
-          storageBackend: 'sqlite', schemaVersion: 2 };
+          storageBackend: 'sqlite', schemaVersion: 3, dataStudioEditing: true };
       } else if (path === '/admin/export' && method === 'GET') {
         data = (await this.record()).snapshot;
       } else if (path === '/admin/backup' && method === 'GET') {
@@ -113,8 +114,8 @@ export class SchedulerStore {
       } else if (path === '/admin/migration/commit' && method === 'POST') {
         data = await this.commitMigration(await json(request), kv);
       } else if (path === '/admin/migration/discard' && method === 'POST') {
-        data = await this.storage.transaction(async tx => {
-          if (await this.record(false)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
+        data = await this.records.transaction(async tx => {
+          if (await this.record(false, true)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
           await tx.delete(CANDIDATE_KEY); // Immutable DO/KV backups deliberately retained.
           return { discarded: true };
         });
@@ -123,8 +124,8 @@ export class SchedulerStore {
       } else if (path === '/admin/rollback/restore' && method === 'POST') {
         data = await this.restoreLegacy(await json(request), kv);
       } else if (path === '/admin/rollback/resume' && method === 'POST') {
-        data = await this.storage.transaction(async () => {
-          const record = await this.record();
+        data = await this.records.transaction(async () => {
+          const record = await this.record(true, true);
           record.mode = 'active';
           delete record.rollbackId;
           this.records.write(record);
@@ -168,8 +169,8 @@ export class SchedulerStore {
       assertManifest(second.manifest, expected);
       backup = await sealBackup({ kind: 'migration', id: crypto.randomUUID(), createdAt: new Date().toISOString(),
         snapshot: await makeSnapshot(second.tasks), expected, entries: second.entries });
-      await this.storage.transaction(async tx => {
-        if (await this.record(false) || await tx.get(CANDIDATE_KEY)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
+      await this.records.transaction(async tx => {
+        if (await this.record(false, true) || await tx.get(CANDIDATE_KEY)) throw new SchedulerError('MIGRATION_CONFLICT', 409);
         await tx.put(backupKey(backup.id), backup);
         await tx.put(CANDIDATE_KEY, backup.id);
       });
@@ -187,8 +188,8 @@ export class SchedulerStore {
     const backup = await checkBackup(await this.storage.get(backupKey(id)));
     await this.verifyPublishedBackup(kv, backup);
     assertManifest((await scanLegacy(kv)).manifest, backup.expected);
-    return this.storage.transaction(async () => {
-      const existing = await this.record(false);
+    return this.records.transaction(async () => {
+      const existing = await this.record(false, true);
       if (existing) return { alreadyMigrated: true, ...summary(existing) };
       const next = { mode: 'active', migrationId: id, snapshot: backup.snapshot,
         knownTaskIds: backup.snapshot.tasks.map(task => task.id) };
@@ -198,8 +199,8 @@ export class SchedulerStore {
   }
 
   async prepareRollback() {
-    const backup = await this.storage.transaction(async tx => {
-      const record = await this.record();
+    const backup = await this.records.transaction(async tx => {
+      const record = await this.record(true, true);
       if (record.mode !== 'active') return checkBackup(await tx.get(backupKey(record.rollbackId)));
       const backup = await sealBackup({ kind: 'rollback', id: crypto.randomUUID(),
         createdAt: new Date().toISOString(), snapshot: record.snapshot });
@@ -237,7 +238,7 @@ export class SchedulerStore {
       if (!desired.has(key) && await kv.get(key) !== null) throw new SchedulerError('ROLLBACK_MISMATCH', 409);
     }
     record.mode = 'rollback-ready';
-    await this.storage.transaction(() => { this.records.write(record); });
+    await this.records.transaction(() => { this.records.write(record); });
     return { ready: true, ...backupSummary(backup) };
   }
 }

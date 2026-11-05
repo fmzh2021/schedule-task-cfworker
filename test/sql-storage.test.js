@@ -2,6 +2,7 @@ import { after, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { STORE_NAME, TASKS_KEY, makeSnapshot, sha256, validateRecord } from '../src/storage-format.js';
 import { SQL_BACKUP_KEY, SQL_LEGACY_GUARD, SQL_MARKER_KEY } from '../src/sql-task-storage.js';
+import { EDITABLE_MARKER_KEY } from '../src/editable-task-storage.js';
 import { harness, task } from './fakes.js';
 
 const originalConsole = { log: console.log, error: console.error };
@@ -56,7 +57,7 @@ test('existing DO snapshot upgrades to one SQL row per task without changing com
   const state = h.storage.sql.exec('SELECT * FROM scheduler_state').toArray()[0];
   assert.equal(state.revision, 17);
   assert.deepEqual(JSON.parse(state.known_task_ids_json), record.knownTaskIds);
-  assert.equal((await request(h, '/admin/status')).data.schemaVersion, 2);
+  assert.equal((await request(h, '/admin/status')).data.schemaVersion, 3);
   assert.ok(!logs.join('\n').includes('credential-sentinel'));
   assert.ok(!logs.join('\n').includes('body-sentinel'));
   noKV(h);
@@ -168,18 +169,17 @@ test('activation-marker write failure also restores the original legacy key, bac
   noKV(h);
 });
 
-for (const damage of ['deleted-row', 'deleted-state', 'dropped-tasks', 'dropped-all', 'changed-json', 'bad-marker']) {
+for (const damage of ['deleted-state', 'dropped-tasks', 'dropped-all', 'changed-digest', 'bad-marker']) {
   test(`SQL ${damage} is DATA_CORRUPT without fallback to old DO or Workers KV`, async () => {
     const { h } = await seed();
     await request(h);
-    if (damage === 'deleted-row') h.storage.sql.exec('DELETE FROM tasks');
     if (damage === 'deleted-state') h.storage.sql.exec('DELETE FROM scheduler_state');
     if (damage === 'dropped-tasks') h.storage.sql.exec('DROP TABLE tasks');
     if (damage === 'dropped-all') {
       for (const table of ['tasks', 'scheduler_state', 'scheduler_schema']) h.storage.sql.exec(`DROP TABLE ${table}`);
     }
-    if (damage === 'changed-json') h.storage.sql.exec("UPDATE tasks SET config_json = json_set(config_json, '$.name', 'edited')");
-    if (damage === 'bad-marker') await h.storage.put(SQL_MARKER_KEY, { version: 999 });
+    if (damage === 'changed-digest') h.storage.sql.exec("UPDATE scheduler_state SET sha256 = 'bad-digest'");
+    if (damage === 'bad-marker') await h.storage.put(EDITABLE_MARKER_KEY, { version: 999 });
     h.reboot();
     assert.equal((await request(h)).code, 'DATA_CORRUPT');
     noKV(h);
@@ -189,7 +189,7 @@ for (const damage of ['deleted-row', 'deleted-state', 'dropped-tasks', 'dropped-
 test('SQL tables without durable activation marker do not trigger stale reimport', async () => {
   const { h } = await seed();
   await request(h);
-  await h.storage.delete(SQL_MARKER_KEY);
+  await h.storage.delete(EDITABLE_MARKER_KEY);
   h.reboot();
   assert.equal((await request(h)).code, 'DATA_CORRUPT');
   noKV(h);
