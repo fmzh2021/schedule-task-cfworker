@@ -27,6 +27,7 @@
 | 事件 | 测试及打包 | 发布 |
 | --- | --- | --- |
 | PR 目标为 master | 执行 | 不发布，不提供 Cloudflare 凭据 |
+| push 到 feature/** 或 codex/** | 执行 | 不发布，不提供 Cloudflare 凭据 |
 | push 到 master，启用变量未设或不是 `true` | 执行 | 跳过，提示首次迁移要求 |
 | push 到 master，启用变量为 `true` | 执行 | 验证全部通过后发布 |
 | 在 master 手动运行 workflow | 执行 | 同样受启用变量约束 |
@@ -77,7 +78,7 @@ Worker 现有的 `API_KEY` 保留在 Cloudflare，推荐使用 Worker Secret 保
 git push github master
 ```
 
-推送 `origin/master`（GitLab）不会触发本 GitHub workflow。GitHub 默认分支已设为 `master`，与发布分支一致；`push.branches: [master]` 的自动触发本身不依赖默认分支。手动 `workflow_dispatch` 要求 workflow 也存在于默认分支，首次合入前可通过面向 `master` 的 PR 验证。
+推送 `origin/master`（GitLab）不会触发本 GitHub workflow。GitHub 默认分支已设为 `master`，与发布分支一致；push 自动触发本身不依赖默认分支。手动 `workflow_dispatch` 要求 workflow 也存在于默认分支，首次合入前可通过推送功能分支或面向 `master` 的 PR 验证。
 
 ## 发布结果与暂停方式
 

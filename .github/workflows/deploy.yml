@@ -2,7 +2,7 @@ name: Verify and deploy scheduler
 
 on:
   push:
-    branches: [master]
+    branches: [master, "feature/**", "codex/**"]
   pull_request:
     branches: [master]
   workflow_dispatch:
