@@ -61,7 +61,7 @@ function parseCronField(field, current, min, max) {
 function getCSTTimeParts(date) {
   // Convert to UTC+8 timezone
   const cstOffset = 8 * 60; // UTC+8 in minutes
-  const utcTime = date.getTime() + (date.getTimezoneOffset() * 60000);
+  const utcTime = date.getTime();
   const cstTime = new Date(utcTime + (cstOffset * 60000));
   
   return {
@@ -81,7 +81,7 @@ export function matchesCron(cron, date = new Date()) {
   try {
     const parts = cron.trim().split(/\s+/);
     if (parts.length !== 5) {
-      console.error(`Invalid cron expression: ${cron}`);
+      console.error('Invalid cron expression');
       return false;
     }
 
@@ -113,7 +113,7 @@ export function matchesCron(cron, date = new Date()) {
 
     return minuteMatch && hourMatch && dayMatch && monthMatch && weekdayMatch;
   } catch (error) {
-    console.error(`Failed to parse cron expression: ${cron}`, error);
+    console.error('Failed to parse cron expression');
     return false;
   }
 }
@@ -165,7 +165,7 @@ export function getNextCronTime(cron, startDate = new Date()) {
 
     return null; // 在一年内未找到匹配时间
   } catch (error) {
-    console.error(`计算下一个触发时间失败: ${cron}`, error);
+    console.error('计算下一个触发时间失败');
     return null;
   }
 }

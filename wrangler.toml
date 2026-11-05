@@ -2,11 +2,20 @@ name = "schedule-task-cfworker"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# KV 命名空间 - 用于存储任务配置
+# 仅用于旧任务迁移和备份/回滚；正常调度与 CRUD 不访问 KV
 [[kv_namespaces]]
 binding = "TASKS_KV"
 id = "99b84a8990a145ccafaf3550b24dfbee"  # 部署时需要创建 KV 命名空间并填入 ID
 preview_id = "99b84a8990a145ccafaf3550b24dfbee"  # 本地开发时使用
+
+# 所有实例通过固定名称 scheduler-tasks-v1 访问同一个强一致任务存储
+[[durable_objects.bindings]]
+name = "SCHEDULER_STORE"
+class_name = "SchedulerStore"
+
+[[migrations]]
+tag = "v1-scheduler-store"
+new_sqlite_classes = ["SchedulerStore"]
 
 # Cron Triggers - 使用通用触发器，在代码中解析 cron 表达式
 # 注意：由于 Cloudflare Workers 限制最多 5 个 cron 触发器
@@ -24,5 +33,3 @@ crons = [
 #
 # 本地开发时可以在 .dev.vars 文件中设置（不会被提交到 Git）：
 # API_KEY=your-secret-api-key-here
-API_KEY=foxhello2025
-

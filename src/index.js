@@ -3,8 +3,10 @@
  * 支持配置调度规则、API 参数配置和 POST 请求
  */
 
-import { getAllTasks, getTask, saveTask, deleteTask } from './config.js';
-import { getMatchingTasks, matchesCron, getNextCronTimes } from './cron-parser.js';
+import { getAllTasks, getTask, saveTask, updateTask, deleteTask, storeRequest } from './config.js';
+import { SchedulerError, safeError } from './storage-format.js';
+export { SchedulerStore } from './scheduler-store.js';
+import { getMatchingTasks, getNextCronTimes } from './cron-parser.js';
 
 /**
  * 验证 API Key
@@ -110,7 +112,7 @@ export default {
     // 接口鉴权检查
     if (requiresAuth(path, request.method)) {
       if (!verifyApiKey(request, env)) {
-        console.warn(`[鉴权失败] ${request.method} ${path} - IP: ${request.headers.get('CF-Connecting-IP') || 'unknown'}`);
+        console.warn(JSON.stringify({ event: 'auth_failed', method: request.method }));
         return jsonResponse(
           {
             success: false,
@@ -121,14 +123,20 @@ export default {
           401
         );
       }
-      console.log(`[鉴权成功] ${request.method} ${path}`);
     }
 
     try {
+      // Administration always requires a configured key, including development.
+      if (path.startsWith('/api/admin/')) {
+        if (!env.API_KEY) return jsonResponse({ success: false, error: '管理操作需要配置 API_KEY' }, corsHeaders, 503);
+        const adminBody = request.method === 'POST' ? await request.json() : undefined;
+        const data = await storeRequest(env, path.slice(4) + url.search, request.method, adminBody);
+        return jsonResponse({ success: true, data }, corsHeaders);
+      }
       // API 路由
       if (path === '/api/tasks' && request.method === 'GET') {
         // 获取所有任务
-        const tasks = await getAllTasks(env.TASKS_KV);
+        const tasks = await getAllTasks(env);
         return jsonResponse({ success: true, data: tasks }, corsHeaders);
       }
 
@@ -160,22 +168,14 @@ export default {
           updatedAt: new Date().toISOString(),
         };
 
-        const success = await saveTask(env.TASKS_KV, taskId, config);
-        if (success) {
-          return jsonResponse({ success: true, data: config }, corsHeaders, 201);
-        } else {
-          return jsonResponse(
-            { success: false, error: '保存任务失败' },
-            corsHeaders,
-            500
-          );
-        }
+        await saveTask(env, taskId, config);
+        return jsonResponse({ success: true, data: config }, corsHeaders, 201);
       }
 
       if (path.startsWith('/api/tasks/') && request.method === 'GET') {
         // 获取单个任务
         const taskId = path.split('/').pop();
-        const task = await getTask(env.TASKS_KV, taskId);
+        const task = await getTask(env, taskId);
         if (task) {
           return jsonResponse({ success: true, data: task }, corsHeaders);
         } else {
@@ -192,53 +192,25 @@ export default {
         const taskId = path.split('/').pop();
         const taskConfig = await request.json();
         
-        const existingTask = await getTask(env.TASKS_KV, taskId);
-        if (!existingTask) {
-          return jsonResponse(
-            { success: false, error: '任务不存在' },
-            corsHeaders,
-            404
-          );
+        // Read/merge/write all occur inside the singleton DO storage transaction.
+        const config = await updateTask(env, taskId, taskConfig);
+        if (!config) {
+          return jsonResponse({ success: false, error: '任务不存在' }, corsHeaders, 404);
         }
-
-        const config = {
-          ...existingTask,
-          ...taskConfig,
-          id: taskId,
-          updatedAt: new Date().toISOString(),
-        };
-
-        const success = await saveTask(env.TASKS_KV, taskId, config);
-        if (success) {
-          return jsonResponse({ success: true, data: config }, corsHeaders);
-        } else {
-          return jsonResponse(
-            { success: false, error: '更新任务失败' },
-            corsHeaders,
-            500
-          );
-        }
+        return jsonResponse({ success: true, data: config }, corsHeaders);
       }
 
       if (path.startsWith('/api/tasks/') && request.method === 'DELETE') {
         // 删除任务
         const taskId = path.split('/').pop();
-        const success = await deleteTask(env.TASKS_KV, taskId);
-        if (success) {
-          return jsonResponse({ success: true, message: '任务已删除' }, corsHeaders);
-        } else {
-          return jsonResponse(
-            { success: false, error: '删除任务失败' },
-            corsHeaders,
-            500
-          );
-        }
+        await deleteTask(env, taskId);
+        return jsonResponse({ success: true, message: '任务已删除' }, corsHeaders);
       }
 
       if (path.startsWith('/api/tasks/') && path.endsWith('/trigger') && request.method === 'POST') {
         // 手动触发任务
         const taskId = path.split('/')[3];
-        const task = await getTask(env.TASKS_KV, taskId);
+        const task = await getTask(env, taskId);
         if (!task) {
           return jsonResponse(
             { success: false, error: '任务不存在' },
@@ -271,7 +243,7 @@ export default {
         // 格式化时间为 CST (UTC+8)
         const cstOffset = 8 * 60;
         const formatCSTTime = (date) => {
-          const utcTime = date.getTime() + (date.getTimezoneOffset() * 60000);
+          const utcTime = date.getTime();
           const cstTime = new Date(utcTime + (cstOffset * 60000));
           return {
             iso: date.toISOString(),
@@ -336,11 +308,12 @@ export default {
         },
       }, corsHeaders);
     } catch (error) {
-      console.error('API 错误:', error);
+      const safe = error instanceof SyntaxError ? new SchedulerError('INVALID_REQUEST', 400) : safeError(error);
+      console.error(JSON.stringify({ event: 'api_failed', code: safe.code }));
       return jsonResponse(
-        { success: false, error: error.message },
+        { success: false, error: safe.message, code: safe.code },
         corsHeaders,
-        500
+        safe.status
       );
     }
   },
@@ -351,117 +324,52 @@ export default {
  * @param {ScheduledEvent} event - 定时事件对象
  * @param {Env} env - 环境变量
  */
-async function handleScheduledTask(event, env) {
+export async function handleScheduledTask(event, env) {
+  const startedAt = Date.now();
+  const timestamp = Number.isFinite(event?.scheduledTime) ? event.scheduledTime : startedAt;
+  const scheduledAt = new Date(timestamp);
+  const timing = { scheduledAt: scheduledAt.toISOString(), startedAt: new Date(startedAt).toISOString(),
+    delayMs: startedAt - timestamp, timeSource: Number.isFinite(event?.scheduledTime) ? 'scheduledTime' : 'wall_clock' };
+  console.log(JSON.stringify({ event: 'schedule_started', ...timing }));
   try {
-    const now = new Date();
-    // Get CST time for logging
-    const cstOffset = 8 * 60;
-    const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
-    const cstTime = new Date(utcTime + (cstOffset * 60000));
-    const cstTimeStr = cstTime.toISOString().replace('Z', '+08:00');
-    
-    console.log(`[UTC: ${now.toISOString()}, CST: ${cstTimeStr}] 定时任务触发器执行，检查匹配的任务...`);
-
-    // 获取所有任务
-    const allTasks = await getAllTasks(env.TASKS_KV);
-    
-    if (allTasks.length === 0) {
-      console.log(`[CST: ${cstTimeStr}] 没有配置任何任务`);
-      return;
-    }
-
-    // 使用 cron 解析器获取匹配当前时间的任务（基于东八区时间）
-    const matchingTasks = getMatchingTasks(allTasks, now);
-    
-    // 记录所有任务的检查结果（用于调试）
-    console.log(`[CST: ${cstTimeStr}] 检查 ${allTasks.length} 个任务`);
-    allTasks.forEach(task => {
-      const matches = matchesCron(task.cron, now);
-      console.log(`[CST: ${cstTimeStr}] 任务 ${task.name} (${task.cron}): ${matches ? '匹配' : '不匹配'}`);
-    });
-    
-    if (matchingTasks.length === 0) {
-      console.log(`[CST: ${cstTimeStr}] 当前时间（东八区）没有匹配的任务`);
-      return;
-    }
-
-    console.log(`[CST: ${cstTimeStr}] 找到 ${matchingTasks.length} 个匹配的任务`);
-
-    // 执行所有匹配的任务
-    const promises = matchingTasks.map(task => executeTask(task));
-    const results = await Promise.allSettled(promises);
-
-    // 记录执行结果
-    results.forEach((result, index) => {
-      if (result.status === 'fulfilled') {
-        console.log(`[${now.toISOString()}] 任务执行成功: ${matchingTasks[index].name}`);
-      } else {
-        console.error(`[${now.toISOString()}] 任务执行失败: ${matchingTasks[index].name}`, result.reason);
-      }
-    });
+    const tasks = await getAllTasks(env);
+    const matching = getMatchingTasks(tasks, scheduledAt);
+    const results = await Promise.allSettled(matching.map(task => executeTask(task)));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    console.log(JSON.stringify({ event: 'schedule_finished', ...timing, taskCount: tasks.length,
+      matched: matching.length, succeeded: results.length - failed, failed }));
+    if (failed) throw new SchedulerError('TASK_EXECUTION_FAILED', 502);
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] 处理定时任务失败:`, error);
+    const safe = safeError(error);
+    console.error(JSON.stringify({ event: 'schedule_failed', ...timing, code: safe.code }));
+    throw safe; // Rejected waitUntil is observable as a failed Cron invocation.
   }
 }
 
-/**
- * 执行任务
- * @param {Object} task - 任务配置
- */
-async function executeTask(task) {
+export async function executeTask(task) {
   try {
-    console.log(`[${new Date().toISOString()}] 开始执行任务: ${task.name} (${task.id})`);
-
-    // 构建 URL
-    let url = new URL(task.url);
-    
-    // 添加 GET 参数（仅 GET 请求）
+    const url = new URL(task.url);
     if (task.method === 'GET' && task.params) {
-      Object.entries(task.params).forEach(([key, value]) => {
-        url.searchParams.append(key, value);
-      });
+      Object.entries(task.params).forEach(([key, value]) => url.searchParams.append(key, value));
     }
-
-    // 构建请求选项
-    const options = {
-      method: task.method || 'GET',
-      headers: {
-        'User-Agent': 'Cloudflare-Worker-Scheduler/1.0',
-        ...task.headers,
-      },
-    };
-
-    // 添加请求体（POST/PUT 等）
-    if ((task.method === 'POST' || task.method === 'PUT' || task.method === 'PATCH') && task.body) {
-      if (typeof task.body === 'string') {
-        options.body = task.body;
-      } else {
+    const options = { method: task.method || 'GET',
+      headers: { 'User-Agent': 'Cloudflare-Worker-Scheduler/1.0', ...task.headers } };
+    if (['POST', 'PUT', 'PATCH'].includes(task.method) && task.body) {
+      if (typeof task.body === 'string') options.body = task.body;
+      else {
         options.body = JSON.stringify(task.body);
         options.headers['Content-Type'] = options.headers['Content-Type'] || 'application/json';
       }
     }
-
-    // 发送请求
     const response = await fetch(url.toString(), options);
-
-    if (!response.ok) {
-      throw new Error(`API 调用失败: ${response.status} ${response.statusText}`);
-    }
-
-    const result = await response.text();
-    console.log(`[${new Date().toISOString()}] 任务执行成功: ${task.name}`, result);
-
-    return {
-      success: true,
-      taskId: task.id,
-      taskName: task.name,
-      timestamp: new Date().toISOString(),
-      status: response.status,
-      result: result,
-    };
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] 任务执行失败: ${task.name}`, error.message);
-    throw error;
+    console.log(JSON.stringify({ event: 'task_response', status: response.status }));
+    if (!response.ok) throw new SchedulerError('TASK_EXECUTION_FAILED', 502);
+    // Responses can contain credentials, so neither their text nor error text is logged.
+    await response.body?.cancel();
+    return { success: true, status: response.status };
+  } catch {
+    console.error(JSON.stringify({ event: 'task_failed', code: 'TASK_EXECUTION_FAILED' }));
+    throw new SchedulerError('TASK_EXECUTION_FAILED', 502);
   }
 }
 
