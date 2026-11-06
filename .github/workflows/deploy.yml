@@ -16,7 +16,7 @@ env:
 jobs:
   verify:
     name: Test and build
-    runs-on: ubuntu-latest
+    runs-on: instabox-medium
     timeout-minutes: 15
     steps:
       - name: Check out source
@@ -42,7 +42,7 @@ jobs:
     name: Check Cloudflare configuration (read only)
     needs: verify
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: instabox-medium
     timeout-minutes: 5
     steps:
       - name: Check out expected Worker configuration
@@ -105,7 +105,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       vars.SCHEDULER_AUTO_DEPLOY_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: instabox-medium
     timeout-minutes: 10
     concurrency:
       group: schedule-task-cfworker-production
