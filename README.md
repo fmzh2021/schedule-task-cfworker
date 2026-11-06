@@ -8,6 +8,8 @@ Cloudflare Worker 定时任务调度平台，支持配置调度规则、API 参�
 
 **本次显式 SQL 表升级会自动转换当前 DO 的最新数据，无需手工重建任务。Data Studio 对象选择、查询 SQL、升级备份及回滚限制见 [SQLite 表操作说明](docs/sqlite-tables.md)。**
 
+**v3 支持在 Data Studio 直接编辑任务**：时间改 `cron`、开关改 `enabled`，请求头/参数/请求体改各自 JSON 列；列与完整配置自动同步。编辑前先核实 `schemaVersion:3`，详见 [直接编辑操作说明](docs/datastudio-editing.md)。
+
 ## 功能说明
 
 - **配置调度规则**：通过 API 动态配置任务的 cron 表达式
@@ -25,6 +27,7 @@ schedule-task-cfworker/
 │   ├── config.js         # 固定名称 Durable Object 客户端
 │   ├── scheduler-store.js # 强一致任务存储及迁移/回滚
 │   ├── sql-task-storage.js # 显式 SQL 表及当前 DO 数据自动升级
+│   ├── editable-task-storage.js # 可编辑任务列、SQL 触发器与 v2 → v3 升级
 │   ├── storage-format.js # 数据校验与摘要
 │   ├── legacy-kv.js      # 仅管理操作使用的分页 KV 访问
 │   └── cron-parser.js    # Cron 表达式解析器

@@ -1,19 +1,27 @@
 # 本地与生产验证结果
 
-日期：2026-11-05（Asia/Shanghai）。本记录包含显式 SQL 表升级的本地测试，以及随后 master 自动部署后的只读生产核验。生产核验没有调用任务 CRUD、手动触发或写入 SQL；自然 Cron 两次均未匹配任务，因此没有真实通知请求。
+日期：2026-11-05（Asia/Shanghai）。本记录包含显式 SQL 表 v2 发布核验，以及后续 v3 可编辑列的本地测试。v2 生产核验没有调用任务 CRUD、手动触发或写入 SQL；自然 Cron 两次均未匹配任务，没有真实通知请求。v3 本轮仅本地与功能分支验证，没有部署或编辑生产任务。
 
 ## 执行结果
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm test` | **56 / 56 通过，0 失败**；最终运行约 9.23 秒 |
-| `npm run test:runtime` | **2 / 2 通过，0 失败**；最终 workerd 测试约 3.75 秒（不含前置打包） |
-| 前置 `wrangler deploy --dry-run --outdir dist` | 成功；44.16 KiB / gzip 11.31 KiB；识别 `SCHEDULER_STORE:SchedulerStore` 与 `TASKS_KV`；输出明确为 `--dry-run: exiting now` |
+| `npm test` | **64 / 64 通过，0 失败**；本轮运行约 18.56 秒 |
+| `npm run test:runtime` | **4 / 4 通过，0 失败**；本轮 workerd 测试约 3.87 秒（不含前置打包） |
+| 前置 `wrangler deploy --dry-run --outdir dist` | 成功；55.77 KiB / gzip 13.60 KiB；识别 `SCHEDULER_STORE:SchedulerStore` 与 `TASKS_KV`；输出明确为 `--dry-run: exiting now` |
 | `git diff --check` | 退出码 0，无空白错误 |
 
 环境：Node.js 22.22.0、Wrangler 3.114.15、Miniflare 3.20250718.2。新增的模拟 SQL 使用 Node 内置 `node:sqlite`（会有 ExperimentalWarning），没有新增依赖。现有 Wrangler 会显示版本提示，本次没有升级依赖、修改锁文件或改变部署工作流。
 
-## 生产发布后的核验
+## v3 可编辑列的本地核验
+
+`test/datastudio.test.js` 验证直接修改名称、Cron、开关、方法、请求头和 JSON 请求体；开/关 SQLite 递归触发器两种情况下，多列修改均与完整 JSON/API 同步。原未知字段、缺省值、JSON null/布尔/数字/字符串/数组/对象全部保留。直接 JSON 编辑也同步回对应列；冲突的列/JSON 值、非法 JSON、非法开关及 ID 修改均被拒绝。
+
+直接 SQL 修改后，下一次 DO 读取事务更新数量、摘要和 revision；重复读取不重复递增。直接删除允许位置空隙及合法空集合，SQL 新增任务的历史 ID 持久保留；最新回滚备份包含 SQL 修改，冻结时 SQL 增删改同样被拒绝。损坏的元数据/表继续明确报错；合法编辑通过触发器记录，不再被当成摘要损坏。
+
+真实 workerd 新增两项验证：一项将 12 个 API 局部更新与直接 SQL 多列编辑并发，所有 API 字段、SQL 新 Cron/headers/body 和原未知字段均保留；按 UTC+8 原定分钟恰好发出一次模拟 POST，禁用后同一分钟再次检查不发请求。另一项先用旧代码建立与生产一致的 v2 表，在安装触发器时注入失败，确认事务回到完整 v2 状态；重试升级后直接改相同的 `cron` 列即可读取生效。另在持久化重启测试中，把未读取的直接 SQL 修改留到整个 workerd 退出后，重启仍能完成校验、读取新值。所有出站请求由模拟处理，未透传真实网络。
+
+## v2 生产发布后的核验（历史记录）
 
 功能分支 `codex/sqlite-task-tables` 已合并到 master，合并提交为 `d42bea0`。GitHub Actions 的三个 job（测试构建、Cloudflare 只读配置检查、部署）全部成功：[Actions 运行记录](https://github.com/fmzh2021/schedule-task-cfworker/actions/runs/41993793057)。Cloudflare 最新部署版本为 `42a23b1f-2130-41f1-ab41-2109bee83308`，部署时间为 2026-11-05 16:21:51（北京时间）。
 
@@ -79,7 +87,7 @@
 | DO → SQL 转换 | 两个任务各一行，生成列可查询，完整 JSON、未知字段、缺省值、顺序、revision、历史 ID、迁移 ID 全保留；合法空集合和两种回滚冻结模式保留 |
 | 转换失败 | 非法原记录不建表；第二行插入失败或最后激活标记写入失败时，DDL、全部行、内部 KV 备份及旧键变更全部撤销；同一实例重试成功 |
 | SQL 事务 | 元数据写入失败时，已删除/替换的任务行整体恢复，重建实例后原 revision 和内容不变 |
-| SQL 损坏 | 删除任务行、删除状态、丢 tasks 表、丢全部表、直接编辑 JSON、错误激活标记、表存在但标记丢失均明确拒绝，无旧备份/KV 回退 |
+| SQL 损坏 | 删除状态、丢 tasks 表、丢全部表、损坏摘要、错误激活标记、表存在但标记丢失均明确拒绝，无旧备份/KV 回退；v3 合法任务编辑与删除使用触发器记录并校验 |
 | 防误回退 | 转换后旧 DO 单键是格式标记，旧记录校验明确拒绝；原完整记录仅保留为带摘要备份，修改后重启不会重导入旧数据 |
 
 ## workerd / SQLite 验证
@@ -96,4 +104,4 @@
 
 ## 验证边界
 
-本地模拟不能证明真实 KV 跨地区传播时间、历史平台内部原因、目标账户 DO 配额或生产任务端的幂等性。本轮没有读取或修改生产任务；SQL 转换的实际生效须在该版本发布后核验 [状态与 Data Studio](sqlite-tables.md)。旧 KV → DO 的首次迁移已经完成，不应重跑；其他新环境迁移仍必须有冻结后的独立完整清单。回滚到旧 KV 版本必须继续核验传播，单节点的 `ready:true` 不保证全网即时一致。
+本地模拟不能证明真实 KV 跨地区传播时间、历史平台内部原因、目标账户 DO 配额或生产任务端的幂等性。v3 本轮没有读取或修改生产任务；直接编辑能力的实际生效须在 v3 发布后核验 `schemaVersion:3, dataStudioEditing:true`，见 [编辑说明](datastudio-editing.md)。旧 KV → DO 的首次迁移已经完成，不应重跑；其他新环境迁移仍必须有冻结后的独立完整清单。回滚到旧 KV 版本必须继续核验传播，单节点的 `ready:true` 不保证全网即时一致。

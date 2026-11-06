@@ -1,6 +1,7 @@
 // Local workerd test entry ONLY. These private inspection/seeding hooks are
 // absent from src/index.js and the production dist/index.js bundle.
 import worker, { SchedulerStore as ProductionStore } from '../dist/index.js';
+import { SQLTaskStorage as V2Storage } from '../src/sql-task-storage.js';
 export default worker;
 
 export class SchedulerStore extends ProductionStore {
@@ -10,6 +11,13 @@ export class SchedulerStore extends ProductionStore {
       const { record } = await request.json();
       await this.storage.put('scheduler:tasks:v1', record);
       return Response.json({ seeded: true });
+    }
+    if (path === '/__test/seed-v2') {
+      const { record } = await request.json();
+      await this.storage.put('scheduler:tasks:v1', record);
+      const old = new V2Storage(this.storage);
+      await old.ensure();
+      return Response.json({ schemaVersion: old.schema().version });
     }
     if (path === '/__test/query') {
       const { query, bindings = [] } = await request.json();
@@ -41,6 +49,15 @@ export class SchedulerStore extends ProductionStore {
       let inserts = 0;
       this.records.sql = { exec: (query, ...bindings) => {
         if (query.startsWith('INSERT INTO tasks') && ++inserts === 2) throw new Error('intentional-upgrade-failure');
+        return original.exec(query, ...bindings);
+      } };
+      try { return await super.fetch(new Request('https://scheduler.internal/tasks')); }
+      finally { this.records.sql = original; }
+    }
+    if (path === '/__test/failed-editable-upgrade') {
+      const original = this.records.sql;
+      this.records.sql = { exec: (query, ...bindings) => {
+        if (query.startsWith('CREATE TRIGGER tasks_json')) throw new Error('intentional-editable-upgrade-failure');
         return original.exec(query, ...bindings);
       } };
       try { return await super.fetch(new Request('https://scheduler.internal/tasks')); }

@@ -31,7 +31,7 @@
 | KV 固定集合键 + DO 串行写入 | 约 1,440 Get、0 List | KV 跨节点传播延迟 | 读便宜，但禁用/删除仍可能短时执行旧配置；还需可靠发布队列 |
 | 本次实现：DO 统一读写 | **0 Get、0 List、0 Put、0 Delete** | DO 提交后，后续读取取得已提交状态 | 每分钟一次 DO 请求，增加 DO 依赖及集中访问延迟 |
 
-当前源码将任务保存在 **DO SQLite** 的显式 `tasks` 表，每个任务一行；`scheduler_state` 保存运行状态、数量、revision 和摘要。最初修复版本使用的 DO storage 键 `scheduler:tasks:v1` 会在首次访问时自动完整转换并备份，不读取过时的旧 Workers KV。详见 [SQL 表升级及 Data Studio 说明](sqlite-tables.md)。`TASKS_KV` 只保存旧 `task:*` 和不可变管理备份；CRUD 和 Cron 没有 KV 回退分支。特意不保留应用层任务缓存；日志 `cacheHit:false` 指应用层没有缓存，不代表平台内部 storage 缓存。
+当前源码将任务保存在 **DO SQLite** 的显式 `tasks` 表，每个任务一行；`scheduler_state` 保存运行状态、数量、revision 和摘要。v3 支持 Data Studio 直接编辑任务列，SQLite 触发器同步 JSON 并标记待校验变更，下次 DO 读取事务更新数量、摘要和 revision；正常 SQL 删除视为合法删除，表结构/元数据丢失仍报错，详见 [直接编辑说明](datastudio-editing.md)。最初修复版本使用的 DO storage 键 `scheduler:tasks:v1` 会在首次访问时自动完整转换并备份，不读取过时的旧 Workers KV。详见 [SQL 表升级及 Data Studio 说明](sqlite-tables.md)。`TASKS_KV` 只保存旧 `task:*` 和不可变管理备份；CRUD 和 Cron 没有 KV 回退分支。特意不保留应用层任务缓存；日志 `cacheHit:false` 指应用层没有缓存，不代表平台内部 storage 缓存。
 
 所有 Worker 通过 `SCHEDULER_STORE.idFromName('scheduler-tasks-v1')` 访问同一个对象。任务合并与保存放在 storage transaction 内。DO 内的请求队列用于防止管理导出与恢复写入交错；跨实例安全来自固定 DO 身份、持久化状态和事务，绝不是边缘模块锁。重建 DO 实例也不会丢失数据。
 
@@ -142,6 +142,7 @@ node scripts/scheduler-admin.mjs discard
 | `src/config.js` | 固定名称 DO 客户端；所有任务接口共享同一数据源，无模块任务缓存 |
 | `src/scheduler-store.js` | SQLite DO、事务化增删改查、迁移状态机、不可变备份、回滚冻结与恢复 |
 | `src/sql-task-storage.js` | 显式 tasks/state/schema 表、当前 DO 记录自动转换、完整备份及防止过时回退 |
+| `src/editable-task-storage.js` | v3 可编辑列与 JSON 双向同步、代次检查及摘要更新、SQL 冻结、v2 完整升级备份 |
 | `src/storage-format.js` | 数据格式、数量/ID/摘要验证、稳定错误码与安全异常 |
 | `src/legacy-kv.js` | 仅管理路径使用的分页 KV、操作计数、源数据校验 |
 | `src/index.js` | 原 API 接入 DO；PUT 事务内合并；scheduledTime；安全日志；Cron 失败可观察 |

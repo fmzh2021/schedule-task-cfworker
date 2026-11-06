@@ -185,7 +185,7 @@ test('unmigrated, corrupted and legitimate empty state are distinct; scheduled f
 
 test('snapshot checksum detects content corruption', async () => {
   const h = await migrated([task('a')]);
-  h.storage.sql.exec(`UPDATE tasks SET config_json = json_set(config_json, '$.enabled', json('false'))`);
+  h.storage.sql.exec(`UPDATE scheduler_state SET sha256 = 'corrupt'`);
   assert.equal((await api(h, '/api/tasks')).value.code, 'DATA_CORRUPT');
 });
 

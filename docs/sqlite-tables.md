@@ -2,6 +2,8 @@
 
 本次升级让同一个 SQLite Durable Object 中的任务从 `storage.get/put` 内部键值记录，转为 SQL API 管理的显式表。`tasks` **每个任务一行**，Data Studio 可查看和查询。现有 API、鉴权、任务 ID、分钟 Cron、UTC+8 及手动触发行为保持不变。
 
+本文记录最初的 **v2 表结构**。后续新增的 **v3 可编辑表**支持直接改 `cron/enabled` 等列，列与 JSON 自动同步、摘要自动维护；以 [Data Studio 编辑说明](datastudio-editing.md) 为准。是否已上线 v3，查看管理状态的 `schemaVersion:3, dataStudioEditing:true`。
+
 ## 发布与自动转换
 
 当前生产环境的三个任务已在 DO 中；原 `TASKS_KV` 不再是最新数据源。**不需要再次执行旧 KV 的 prepare/commit，也不要重新导入旧 `task:*`。**
@@ -60,7 +62,7 @@ FROM tasks;
 
 `enabled` 为 SQLite 的 `1/0`；历史配置未设置时显示 NULL，完整 JSON 仍保留其缺省语义。需要排查特定字段时，可查询 `json_extract(config_json, '$.字段名')`。`config_json` 和 URL 可能含任务凭据，不要整行截图或把查询结果写入公共日志。Data Studio 本身需要账户对应的访问权限。
 
-这些显示列从同一份 `config_json` 生成，避免两个版本的字段互相不同步。日常增删改继续走原 API，以同时维护修订号、数量、摘要和历史 ID。**Data Studio 可查看数据库；直接 SQL 编辑会绕过这些校验，后续读取可能返回 `DATA_CORRUPT` 并暂停调度。** 应通过 API 修正合法配置；若已经损坏，先保全现场和最新私有备份，再安排一致性恢复，不能通过清空表消除报错。
+v2 的显示列从同一份 `config_json` 生成，直接 SQL 编辑不能同步摘要，可能返回 `DATA_CORRUPT`。**升级到 v3 后，直接改对应列即可，JSON、摘要和修订号由触发器及 DO 读取事务维护。** 操作方式及错误恢复见 [Data Studio 编辑说明](datastudio-editing.md)。两个版本都不支持手工改元数据或丢弃表结构。
 
 ## 备份与回滚
 
